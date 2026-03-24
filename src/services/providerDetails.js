@@ -113,20 +113,21 @@ function parseServerItemsFromHtml(html) {
   return items;
 }
 
-function pickPreferredServerItem(serverItems, normalizedType) {
+function sortServerItemsByPreference(serverItems, normalizedType) {
   const entries = Array.isArray(serverItems)
     ? serverItems.filter((item) => item?.type === normalizedType)
     : [];
   if (entries.length < 1) {
-    return null;
+    return [];
   }
 
-  const preferredOrder = ['vidstreaming', 'vidcloud', 'douvideo'];
-  const preferred = preferredOrder
-    .map((serverName) => entries.find((item) => item.name === serverName))
-    .find(Boolean);
+  const preferredOrder = ['vidcloud', 'vidstreaming', 'douvideo'];
+  const getRank = (name) => {
+    const index = preferredOrder.indexOf(name);
+    return index < 0 ? preferredOrder.length + 1 : index;
+  };
 
-  return preferred || entries[0];
+  return [...entries].sort((a, b) => getRank(a.name) - getRank(b.name));
 }
 
 function parseRapidCloudSourceRequestUrl(url) {
@@ -227,41 +228,48 @@ async function resolveEmbeddedStreamDataFromNineAjax(selectedUrl, selectedName, 
       )}&type=${encodeURIComponent(normalizedType)}`;
       const serversPayload = await fetchJsonWithFallback(serversUrl, c, embedded.referer);
       const serverItems = parseServerItemsFromHtml(serversPayload?.html);
-      const preferredServer = pickPreferredServerItem(serverItems, normalizedType);
-      if (!preferredServer?.id) {
+      const preferredServers = sortServerItemsByPreference(serverItems, normalizedType);
+      if (preferredServers.length < 1) {
         continue;
       }
 
-      const sourcesUrl = `${base}/ajax/episode/sources?id=${encodeURIComponent(
-        preferredServer.id
-      )}&type=${encodeURIComponent(normalizedType)}`;
-      const sourcesPayload = await fetchJsonWithFallback(sourcesUrl, c, embedded.referer);
-      const rapidRequest = parseRapidCloudSourceRequestUrl(toSafeString(sourcesPayload?.link));
-      if (!rapidRequest) {
-        continue;
-      }
+      for (const preferredServer of preferredServers) {
+        const sourcesUrl = `${base}/ajax/episode/sources?id=${encodeURIComponent(
+          preferredServer.id
+        )}&type=${encodeURIComponent(normalizedType)}`;
+        const sourcesPayload = await fetchJsonWithFallback(sourcesUrl, c, embedded.referer);
+        const rapidRequest = parseRapidCloudSourceRequestUrl(toSafeString(sourcesPayload?.link));
+        if (!rapidRequest) {
+          continue;
+        }
 
-      const rapidPayload = await fetchJsonWithFallback(rapidRequest.getSourcesUrl, c, rapidRequest.referer);
-      const sourceFile = extractStreamFileFromSources(rapidPayload?.sources);
-      if (!sourceFile) {
-        continue;
-      }
+        const rapidPayload = await fetchJsonWithFallback(rapidRequest.getSourcesUrl, c, rapidRequest.referer);
+        const sourceFile = extractStreamFileFromSources(rapidPayload?.sources);
+        if (!sourceFile) {
+          continue;
+        }
 
-      return [
-        {
-          id,
-          type: normalizedType,
-          link: {
-            file: sourceFile,
-            type: mediaTypeForUrl(sourceFile),
+        const isDirectlyReachable = await probeUrl(sourceFile);
+        if (!isDirectlyReachable && preferredServers.length > 1) {
+          continue;
+        }
+
+        return [
+          {
+            id,
+            type: normalizedType,
+            link: {
+              file: sourceFile,
+              type: mediaTypeForUrl(sourceFile),
+            },
+            tracks: normalizeTracks(rapidPayload?.tracks),
+            intro: normalizeStreamWindow(rapidPayload?.intro),
+            outro: normalizeStreamWindow(rapidPayload?.outro),
+            server: selectedName,
+            referer: rapidRequest.origin,
           },
-          tracks: normalizeTracks(rapidPayload?.tracks),
-          intro: normalizeStreamWindow(rapidPayload?.intro),
-          outro: normalizeStreamWindow(rapidPayload?.outro),
-          server: selectedName,
-          referer: rapidRequest.origin,
-        },
-      ];
+        ];
+      }
     } catch {
       // Try next candidate base URL.
     }
