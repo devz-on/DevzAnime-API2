@@ -133,3 +133,6 @@ demo.js
 /htmls
 /filter.js
 
+# Cloudflare Wrangler local secrets/state
+.dev.vars
+.wrangler/

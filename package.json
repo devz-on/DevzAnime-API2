@@ -22,8 +22,9 @@
     "dev": "node --watch index.js",
     "start": "node index.js",
     "vercel-build": "node -e \"console.log('No build step required for serverless runtime')\"",
-    "dev:workers": "wrangler dev",
+    "dev:workers": "wrangler dev --port 8787",
     "deploy:workers": "wrangler deploy",
+    "deploy:workers:dry-run": "wrangler deploy --dry-run",
     "test": "vitest"
   },
   "dependencies": {

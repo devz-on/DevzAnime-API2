@@ -42,10 +42,18 @@ Local URLs:
 Use `.env.example`:
 
 ```env
-ORIGIN=ani.devxjin.site,anime.devxjin.site,devzanime.vercel.app
+ORIGIN=ani.devxjin.site,anime.devxjin.site,devzanime.vercel.app,*.workers.dev
 RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_LIMIT=100
 NODEJS_HELPERS=0
+HIANIMES_API_BASE_URL=https://9animes.cv/api
+HIANIMES_REFERER=https://hianimes.se/
+UPSTREAM_PROXY_M3U8_URL=
+UPSTREAM_PROXY_DANI_URL=https://daniapi.bhoothihu.workers.dev/api/v1/proxy
+JIKAN_API_BASE_URL=https://api.jikan.moe/v4
+CATALOG_CACHE_TTL_SECONDS=900
+DETAIL_CACHE_TTL_SECONDS=300
+CATALOG_MAX_PAGES=6
 PROXY_CACHE_MODE=bandwidth
 PROXY_TIMEOUT_MS=10000
 PROXY_RETRY_COUNT=1
@@ -59,6 +67,8 @@ ERROR_COLLECTOR_MAX_ENTRIES=250
 ERROR_COLLECTOR_INCLUDE_STACK=0
 ERROR_COLLECTOR_TOKEN=
 ```
+
+For local Cloudflare Worker development, copy `.dev.vars.example` to `.dev.vars` and fill secrets there.
 
 ## Error collector guide
 
@@ -121,11 +131,13 @@ Supported query params:
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/devz-on/DevzAnime-Api)
 
-This repo includes `src/worker.js` and `wrangler.toml`.
+This repo includes `src/worker.js` and `wrangler.toml` for native Workers deployment.
 
 1. Install dependencies: `npm install`
 2. Login: `npx wrangler login`
-3. Deploy: `npx wrangler deploy`
+3. Local worker dev: `npm run dev:workers`
+4. Dry-run bundle check: `npm run deploy:workers:dry-run`
+5. Deploy: `npm run deploy:workers`
 
 Worker URLs:
 
@@ -135,7 +147,7 @@ Worker URLs:
 Notes:
 
 - `wrangler.toml` uses `nodejs_compat` for npm compatibility.
-- Update CORS/rate-limit and error collector vars in `[vars]` if needed.
+- Update CORS/rate-limit/provider vars in `[vars]` or via Cloudflare dashboard secrets/vars.
 
 ## Deploy on Vercel (currently not available)
 

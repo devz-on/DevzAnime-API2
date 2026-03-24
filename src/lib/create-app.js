@@ -34,6 +34,7 @@ function parseCorsOrigins(rawOrigin) {
       allowAll: true,
       exactOrigins: [],
       hosts: [],
+      wildcardHosts: [],
     };
   }
 
@@ -47,11 +48,13 @@ function parseCorsOrigins(rawOrigin) {
       allowAll: true,
       exactOrigins: [],
       hosts: [],
+      wildcardHosts: [],
     };
   }
 
   const exactOrigins = new Set();
   const hosts = new Set();
+  const wildcardHosts = new Set();
 
   parsed.forEach((entry) => {
     const normalized = entry.trim();
@@ -69,6 +72,7 @@ function parseCorsOrigins(rawOrigin) {
       return;
     }
 
+    const isWildcardHost = normalized.startsWith('*.');
     const hostOnly = normalized
       .replace(/^\*\./, '')
       .replace(/^https?:\/\//i, '')
@@ -76,7 +80,11 @@ function parseCorsOrigins(rawOrigin) {
       .toLowerCase();
 
     if (hostOnly) {
-      hosts.add(hostOnly);
+      if (isWildcardHost) {
+        wildcardHosts.add(hostOnly);
+      } else {
+        hosts.add(hostOnly);
+      }
     }
   });
 
@@ -84,6 +92,7 @@ function parseCorsOrigins(rawOrigin) {
     allowAll: false,
     exactOrigins: [...exactOrigins],
     hosts: [...hosts],
+    wildcardHosts: [...wildcardHosts],
   };
 }
 
@@ -106,6 +115,15 @@ function resolveCorsOrigin(origin, corsConfig) {
     }
 
     if (corsConfig.hosts.includes(requestHost)) {
+      return origin;
+    }
+
+    if (
+      Array.isArray(corsConfig.wildcardHosts) &&
+      corsConfig.wildcardHosts.some(
+        (host) => requestHost === host || requestHost.endsWith(`.${host}`)
+      )
+    ) {
       return origin;
     }
   } catch {
