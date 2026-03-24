@@ -1,0 +1,24 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "version": 2,
+  "cleanUrls": true,
+  "rewrites": [
+    {
+      "source": "/doc",
+      "destination": "/api/doc"
+    },
+    {
+      "source": "/openapi.json",
+      "destination": "/api/openapi.json"
+    },
+    {
+      "source": "/",
+      "destination": "/api/doc"
+    }
+  ],
+  "functions": {
+    "api/[...route].js": {
+      "maxDuration": 60
+    }
+  }
+}

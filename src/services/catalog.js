@@ -1,0 +1,224 @@
+import { NotFoundError } from '../utils/errors.js';
+import { fetchApi } from './upstream.js';
+import {
+  DEFAULT_PAGE_SIZE,
+  getAlternativeTitle,
+  getAnimeSlug,
+  getBestAnimeTitle,
+  normalizeText,
+  toNumber,
+  toSafeString,
+} from './normalizers.js';
+import { getProviderConfig } from './upstream.js';
+
+const sharedCache = {
+  catalog: null,
+  catalogAt: 0,
+  animeDetails: new Map(),
+};
+
+function now() {
+  return Date.now();
+}
+
+function toNormalizedCatalogEntry(anime) {
+  const title = getBestAnimeTitle(anime);
+  const id = getAnimeSlug(anime);
+  return {
+    ...anime,
+    __id: id,
+    __title: title,
+    __titleNorm: normalizeText(title),
+    __altNorm: normalizeText(getAlternativeTitle(anime)),
+    __producerNorm: normalizeText(toSafeString(anime?.Producers)),
+    __genresNorm: Array.isArray(anime?.genres) ? anime.genres.map((g) => normalizeText(g)) : [],
+    __favorites: toNumber(anime?.Favorites),
+    __score: toNumber(anime?.Score || anime?.score),
+    __popularity: toNumber(anime?.Popularity),
+    __members: toNumber(anime?.Members),
+    __createdAt: (() => {
+      const date = new Date(anime?.createdAt || 0);
+      return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+    })(),
+  };
+}
+
+export async function loadCatalog(c) {
+  const config = getProviderConfig(c);
+  const cacheValid =
+    sharedCache.catalog &&
+    now() - sharedCache.catalogAt < config.catalogCacheTtlSeconds * 1000;
+  if (cacheValid) {
+    return sharedCache.catalog;
+  }
+
+  const all = [];
+  let cursor = null;
+  let pages = 0;
+
+  while (pages < config.maxCatalogPages) {
+    const payload = await fetchApi('/anime', c, {
+      limit: 1000,
+      cursor: cursor || undefined,
+    });
+    const rows = Array.isArray(payload?.animes) ? payload.animes : [];
+    all.push(...rows.map(toNormalizedCatalogEntry));
+    pages += 1;
+    if (!payload?.hasNextPage || !payload?.nextCursor) {
+      break;
+    }
+    cursor = payload.nextCursor;
+  }
+
+  if (all.length < 1) {
+    throw new NotFoundError('catalog not available');
+  }
+
+  sharedCache.catalog = all;
+  sharedCache.catalogAt = now();
+  return all;
+}
+
+export function createSearchCandidates(entry) {
+  const candidates = [entry.__titleNorm, entry.__altNorm];
+  if (Array.isArray(entry?.slugs)) {
+    entry.slugs.forEach((slug) => candidates.push(normalizeText(slug)));
+  }
+  return candidates.filter(Boolean);
+}
+
+export function pickAnimeByInput(catalog, rawId) {
+  const input = toSafeString(rawId);
+  if (!input) {
+    return null;
+  }
+
+  const decoded = decodeURIComponent(input);
+  const normalized = normalizeText(decoded);
+  const withoutTrailingNumeric = decoded.replace(/-\d+$/, '');
+  const normalizedWithoutNumeric = normalizeText(withoutTrailingNumeric);
+
+  const exact = catalog.find((entry) => entry.__id === decoded);
+  if (exact) return exact;
+
+  const exactWithoutNumeric = catalog.find((entry) => entry.__id === withoutTrailingNumeric);
+  if (exactWithoutNumeric) return exactWithoutNumeric;
+
+  const fuzzy = catalog.find((entry) => {
+    if (entry.__titleNorm === normalized || entry.__altNorm === normalized) return true;
+    if (entry.__titleNorm === normalizedWithoutNumeric || entry.__altNorm === normalizedWithoutNumeric)
+      return true;
+    if (Array.isArray(entry?.slugs) && entry.slugs.some((slug) => normalizeText(slug) === normalized))
+      return true;
+    return false;
+  });
+
+  return fuzzy || null;
+}
+
+export function toLegacyEpisodeId(animeId, episode) {
+  const episodeRef = toSafeString(episode?._id || episode?.episodeNumber || '');
+  return `${animeId}::ep=${episodeRef}`;
+}
+
+export function parseLegacyEpisodeId(rawEpisodeId) {
+  const decoded = decodeURIComponent(toSafeString(rawEpisodeId));
+  const match = decoded.match(/^(.*)::ep=(.*)$/);
+  if (!match) {
+    return {
+      animeId: decoded,
+      episodeRef: '',
+    };
+  }
+  return {
+    animeId: toSafeString(match[1]),
+    episodeRef: toSafeString(match[2]),
+  };
+}
+
+export async function loadAnimeDetails(inputId, c) {
+  const config = getProviderConfig(c);
+  const cacheKey = normalizeText(inputId);
+  const cached = sharedCache.animeDetails.get(cacheKey);
+  if (cached && now() - cached.cachedAt < config.detailCacheTtlSeconds * 1000) {
+    return cached.value;
+  }
+
+  const catalog = await loadCatalog(c);
+  const catalogEntry = pickAnimeByInput(catalog, inputId);
+  if (!catalogEntry) {
+    throw new NotFoundError('anime not found');
+  }
+
+  const detailPayload = await fetchApi(`/anime/${encodeURIComponent(catalogEntry.__id)}`, c);
+  const anime = detailPayload?.anime || {};
+  const animeObjectId = toSafeString(anime?._id || catalogEntry?._id);
+  if (!animeObjectId) {
+    throw new NotFoundError('anime id mapping missing');
+  }
+
+  const totalEpisodes = Math.max(toNumber(anime?.totalEpisodes, 0), toNumber(catalogEntry?.totalEpisodes, 0));
+  const episodesPayload = await fetchApi(`/episodes/${encodeURIComponent(animeObjectId)}`, c, {
+    start: 0,
+    end: totalEpisodes > 0 ? totalEpisodes : 2000,
+  });
+  const episodes = Array.isArray(episodesPayload?.episodes) ? episodesPayload.episodes : [];
+
+  const result = {
+    catalogEntry,
+    anime: {
+      ...catalogEntry,
+      ...anime,
+      __id: catalogEntry.__id,
+    },
+    episodes,
+    total: toNumber(episodesPayload?.total, episodes.length),
+  };
+
+  sharedCache.animeDetails.set(cacheKey, {
+    cachedAt: now(),
+    value: result,
+  });
+
+  return result;
+}
+
+export async function resolveEpisode(rawEpisodeId, c) {
+  const { animeId, episodeRef } = parseLegacyEpisodeId(rawEpisodeId);
+  const { anime, episodes } = await loadAnimeDetails(animeId, c);
+
+  if (!episodeRef) {
+    const firstEpisode = episodes[0];
+    if (!firstEpisode) {
+      throw new NotFoundError('episode not found');
+    }
+    return { anime, episode: firstEpisode };
+  }
+
+  const numericEpisodeRef = toNumber(episodeRef, -1);
+  const found =
+    episodes.find((ep) => toSafeString(ep?._id) === episodeRef) ||
+    episodes.find((ep) => toNumber(ep?.episodeNumber, -2) === numericEpisodeRef);
+
+  if (!found) {
+    throw new NotFoundError('episode not found');
+  }
+
+  return { anime, episode: found };
+}
+
+export function paginateExplore(animes, page, toExploreAnime) {
+  const pageNum = Math.max(1, toNumber(page, 1));
+  const totalPages = Math.max(1, Math.ceil(animes.length / DEFAULT_PAGE_SIZE));
+  const currentPage = Math.min(pageNum, totalPages);
+  const start = (currentPage - 1) * DEFAULT_PAGE_SIZE;
+  const rows = animes.slice(start, start + DEFAULT_PAGE_SIZE).map((entry) => toExploreAnime(entry));
+  return {
+    pageInfo: {
+      currentPage,
+      totalPages,
+      hasNextPage: currentPage < totalPages,
+    },
+    response: rows,
+  };
+}
