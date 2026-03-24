@@ -17,7 +17,7 @@ import {
   toNumber,
   toSafeString,
 } from './normalizers.js';
-import { buildProxyUrl, fetchJikan, getProviderConfig, probeUrl } from './upstream.js';
+import { buildProxyUrl, fetchJikan, fetchJsonWithFallback, getProviderConfig, probeUrl } from './upstream.js';
 
 function buildServerItems(urls, type) {
   const list = Array.isArray(urls) ? urls : [];
@@ -50,6 +50,114 @@ async function pickStreamUrlWithFallback(url, c) {
   }
 
   return candidates[0] || url;
+}
+
+function toFiniteNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseEmbeddedStreamUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const sourceMatch = parsed.pathname.match(/\/stream\/s-\d+\/([^/?#]+)(?:\/|$)/i);
+    if (!sourceMatch?.[1]) {
+      return null;
+    }
+
+    return {
+      origin: parsed.origin,
+      sourceId: sourceMatch[1],
+      referer: `${parsed.origin}/`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function extractStreamFileFromSources(sources) {
+  if (Array.isArray(sources)) {
+    const first = sources.find((item) => item && typeof item.file === 'string');
+    return first?.file || '';
+  }
+
+  if (sources && typeof sources === 'object' && typeof sources.file === 'string') {
+    return sources.file;
+  }
+
+  if (typeof sources === 'string' && /^https?:\/\//i.test(sources)) {
+    return sources;
+  }
+
+  return '';
+}
+
+function normalizeTracks(rawTracks) {
+  if (!Array.isArray(rawTracks)) {
+    return [];
+  }
+
+  return rawTracks
+    .map((track) => {
+      if (!track || typeof track !== 'object') {
+        return null;
+      }
+
+      const file = toSafeString(track.file);
+      if (!file) {
+        return null;
+      }
+
+      return {
+        file,
+        label: toSafeString(track.label) || 'Subtitle',
+        kind: toSafeString(track.kind) || 'captions',
+        default: Boolean(track.default),
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeStreamWindow(rawWindow) {
+  return {
+    start: toFiniteNumber(rawWindow?.start, 0),
+    end: toFiniteNumber(rawWindow?.end, 0),
+  };
+}
+
+async function resolveEmbeddedStreamData(selectedUrl, selectedName, normalizedType, id, c) {
+  const embedded = parseEmbeddedStreamUrl(selectedUrl);
+  if (!embedded) {
+    return null;
+  }
+
+  const getSourcesUrl = `${embedded.origin}/stream/getSources?id=${encodeURIComponent(embedded.sourceId)}`;
+
+  try {
+    const payload = await fetchJsonWithFallback(getSourcesUrl, c, embedded.referer);
+    const sourceFile = extractStreamFileFromSources(payload?.sources);
+    if (!sourceFile) {
+      return null;
+    }
+
+    return [
+      {
+        id,
+        type: normalizedType,
+        link: {
+          file: sourceFile,
+          type: mediaTypeForUrl(sourceFile),
+        },
+        tracks: normalizeTracks(payload?.tracks),
+        intro: normalizeStreamWindow(payload?.intro),
+        outro: normalizeStreamWindow(payload?.outro),
+        server: selectedName,
+        referer: embedded.referer,
+      },
+    ];
+  } catch {
+    return null;
+  }
 }
 
 export async function getAnimeInfoData(id, c) {
@@ -149,28 +257,40 @@ export async function getStreamData(id, serverName, type, c) {
 
   const selectedUrl = await pickStreamUrlWithFallback(selected._url, c);
 
-  if (!isLikelyDirectMediaUrl(selectedUrl)) {
-    return {
-      streamingLink: selectedUrl,
-      servers: selected.name,
-    };
+  if (isLikelyDirectMediaUrl(selectedUrl)) {
+    return [
+      {
+        id,
+        type: normalizedType,
+        link: {
+          file: selectedUrl,
+          type: mediaTypeForUrl(selectedUrl),
+        },
+        tracks: [],
+        intro: { start: 0, end: 0 },
+        outro: { start: 0, end: 0 },
+        server: selected.name,
+        referer: getProviderConfig(c).hianimesReferer,
+      },
+    ];
   }
 
-  return [
-    {
-      id,
-      type: normalizedType,
-      link: {
-        file: selectedUrl,
-        type: mediaTypeForUrl(selectedUrl),
-      },
-      tracks: [],
-      intro: { start: 0, end: 0 },
-      outro: { start: 0, end: 0 },
-      server: selected.name,
-      referer: getProviderConfig(c).hianimesReferer,
-    },
-  ];
+  const resolvedStream = await resolveEmbeddedStreamData(
+    selectedUrl,
+    selected.name,
+    normalizedType,
+    id,
+    c
+  );
+  if (resolvedStream) {
+    return resolvedStream;
+  }
+
+  throw new validationError('unable to resolve stream to direct media source', {
+    id,
+    server: selected.name,
+    type: normalizedType,
+  });
 }
 
 export async function getCharactersData(id, page, c) {
