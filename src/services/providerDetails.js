@@ -75,6 +75,86 @@ function parseEmbeddedStreamUrl(url) {
   }
 }
 
+function extractHtmlAttribute(tag, attribute) {
+  const safeAttribute = String(attribute).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`\\b${safeAttribute}\\s*=\\s*(['"])(.*?)\\1`, 'i');
+  return toSafeString(tag.match(regex)?.[2]);
+}
+
+function stripHtmlTags(value) {
+  return toSafeString(value)
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseServerItemsFromHtml(html) {
+  const body = toSafeString(html);
+  if (!body) {
+    return [];
+  }
+
+  const items = [];
+  const itemPattern = /<div[^>]*class=['"][^'"]*\bserver-item\b[^'"]*['"][^>]*>[\s\S]*?<\/div>/gi;
+  let match = itemPattern.exec(body);
+  while (match) {
+    const block = match[0];
+    const openTag = block.match(/^<div[^>]*>/i)?.[0] || '';
+    const id = extractHtmlAttribute(openTag, 'data-id');
+    const type = toSafeString(extractHtmlAttribute(openTag, 'data-type')).toLowerCase();
+    const serverNameRaw = block.match(/<a[^>]*>([\s\S]*?)<\/a>/i)?.[1] || '';
+    const name = stripHtmlTags(serverNameRaw).toLowerCase();
+    if (id && type) {
+      items.push({ id, type, name });
+    }
+    match = itemPattern.exec(body);
+  }
+
+  return items;
+}
+
+function pickPreferredServerItem(serverItems, normalizedType) {
+  const entries = Array.isArray(serverItems)
+    ? serverItems.filter((item) => item?.type === normalizedType)
+    : [];
+  if (entries.length < 1) {
+    return null;
+  }
+
+  const preferredOrder = ['vidstreaming', 'vidcloud', 'douvideo'];
+  const preferred = preferredOrder
+    .map((serverName) => entries.find((item) => item.name === serverName))
+    .find(Boolean);
+
+  return preferred || entries[0];
+}
+
+function parseRapidCloudSourceRequestUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    const eSegmentIndex = segments.findIndex((segment) => /^e-\d+$/i.test(segment));
+    if (eSegmentIndex < 0 || eSegmentIndex + 1 >= segments.length) {
+      return null;
+    }
+
+    const sourceId = toSafeString(segments[eSegmentIndex + 1]);
+    if (!sourceId) {
+      return null;
+    }
+
+    const basePath = segments.slice(0, eSegmentIndex + 1).join('/');
+    const getSourcesUrl = `${parsed.origin}/${basePath}/getSources?id=${encodeURIComponent(sourceId)}`;
+    return {
+      getSourcesUrl,
+      referer: parsed.toString(),
+      origin: `${parsed.origin}/`,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function extractStreamFileFromSources(sources) {
   if (Array.isArray(sources)) {
     const first = sources.find((item) => item && typeof item.file === 'string');
@@ -125,7 +205,72 @@ function normalizeStreamWindow(rawWindow) {
   };
 }
 
-async function resolveEmbeddedStreamData(selectedUrl, selectedName, normalizedType, id, c) {
+async function resolveEmbeddedStreamDataFromNineAjax(selectedUrl, selectedName, normalizedType, id, c) {
+  const embedded = parseEmbeddedStreamUrl(selectedUrl);
+  if (!embedded) {
+    return null;
+  }
+
+  const config = getProviderConfig(c);
+  const baseCandidates = Array.from(
+    new Set(
+      [toSafeString(config.hianimesAjaxBaseUrl), 'https://nine.mewcdn.online']
+        .map((value) => value.replace(/\/+$/, ''))
+        .filter(Boolean)
+    )
+  );
+
+  for (const base of baseCandidates) {
+    try {
+      const serversUrl = `${base}/ajax/episode/servers?episodeId=${encodeURIComponent(
+        embedded.sourceId
+      )}&type=${encodeURIComponent(normalizedType)}`;
+      const serversPayload = await fetchJsonWithFallback(serversUrl, c, embedded.referer);
+      const serverItems = parseServerItemsFromHtml(serversPayload?.html);
+      const preferredServer = pickPreferredServerItem(serverItems, normalizedType);
+      if (!preferredServer?.id) {
+        continue;
+      }
+
+      const sourcesUrl = `${base}/ajax/episode/sources?id=${encodeURIComponent(
+        preferredServer.id
+      )}&type=${encodeURIComponent(normalizedType)}`;
+      const sourcesPayload = await fetchJsonWithFallback(sourcesUrl, c, embedded.referer);
+      const rapidRequest = parseRapidCloudSourceRequestUrl(toSafeString(sourcesPayload?.link));
+      if (!rapidRequest) {
+        continue;
+      }
+
+      const rapidPayload = await fetchJsonWithFallback(rapidRequest.getSourcesUrl, c, rapidRequest.referer);
+      const sourceFile = extractStreamFileFromSources(rapidPayload?.sources);
+      if (!sourceFile) {
+        continue;
+      }
+
+      return [
+        {
+          id,
+          type: normalizedType,
+          link: {
+            file: sourceFile,
+            type: mediaTypeForUrl(sourceFile),
+          },
+          tracks: normalizeTracks(rapidPayload?.tracks),
+          intro: normalizeStreamWindow(rapidPayload?.intro),
+          outro: normalizeStreamWindow(rapidPayload?.outro),
+          server: selectedName,
+          referer: rapidRequest.origin,
+        },
+      ];
+    } catch {
+      // Try next candidate base URL.
+    }
+  }
+
+  return null;
+}
+
+async function resolveEmbeddedStreamDataFromLegacyGetSources(selectedUrl, selectedName, normalizedType, id, c) {
   const embedded = parseEmbeddedStreamUrl(selectedUrl);
   if (!embedded) {
     return null;
@@ -158,6 +303,21 @@ async function resolveEmbeddedStreamData(selectedUrl, selectedName, normalizedTy
   } catch {
     return null;
   }
+}
+
+async function resolveEmbeddedStreamData(selectedUrl, selectedName, normalizedType, id, c) {
+  const resolvedFromNineAjax = await resolveEmbeddedStreamDataFromNineAjax(
+    selectedUrl,
+    selectedName,
+    normalizedType,
+    id,
+    c
+  );
+  if (resolvedFromNineAjax) {
+    return resolvedFromNineAjax;
+  }
+
+  return resolveEmbeddedStreamDataFromLegacyGetSources(selectedUrl, selectedName, normalizedType, id, c);
 }
 
 export async function getAnimeInfoData(id, c) {

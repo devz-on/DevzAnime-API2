@@ -35,6 +35,10 @@ export function getProviderConfig(c) {
       /\/+$/,
       ''
     ),
+    hianimesAjaxBaseUrl: toSafeString(env.HIANIMES_AJAX_BASE_URL || 'https://nine.mewcdn.online').replace(
+      /\/+$/,
+      ''
+    ),
     hianimesReferer: toSafeString(env.HIANIMES_REFERER || 'https://hianimes.se/'),
     m3u8ProxyUrl: toSafeString(env.UPSTREAM_PROXY_M3U8_URL || ''),
     daniProxyUrl: toSafeString(
