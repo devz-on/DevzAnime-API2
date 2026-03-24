@@ -79,6 +79,22 @@ export async function loadCatalog(c) {
   return all;
 }
 
+export function getCachedCatalog(c) {
+  const config = getProviderConfig(c);
+  const cacheValid =
+    sharedCache.catalog &&
+    now() - sharedCache.catalogAt < config.catalogCacheTtlSeconds * 1000;
+  return cacheValid ? sharedCache.catalog : null;
+}
+
+export async function warmCatalog(c) {
+  try {
+    await loadCatalog(c);
+  } catch {
+    // Best-effort background warmup only.
+  }
+}
+
 export function createSearchCandidates(entry) {
   const candidates = [entry.__titleNorm, entry.__altNorm];
   if (Array.isArray(entry?.slugs)) {

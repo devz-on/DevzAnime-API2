@@ -1,6 +1,12 @@
 import { filterOptions } from '../config/meta.js';
 import { validationError } from '../utils/errors.js';
-import { createSearchCandidates, loadCatalog, paginateExplore } from './catalog.js';
+import {
+  createSearchCandidates,
+  getCachedCatalog,
+  loadCatalog,
+  paginateExplore,
+  warmCatalog,
+} from './catalog.js';
 import {
   formatDateYYYYMMDD,
   formatTimeHHMM,
@@ -20,6 +26,7 @@ import { fetchApi, getProviderConfig } from './upstream.js';
 const sharedCache = {
   homeData: null,
   homeAt: 0,
+  homePromise: null,
   latestEpisodes: null,
   latestEpisodesAt: 0,
 };
@@ -30,6 +37,79 @@ function now() {
 
 function toExplorePageResponse(animes, page) {
   return paginateExplore(animes, page, toExploreAnime);
+}
+
+function pickCollection(...candidates) {
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      return candidate;
+    }
+    if (candidate && typeof candidate === 'object') {
+      if (Array.isArray(candidate.animes)) {
+        return candidate.animes;
+      }
+      if (Array.isArray(candidate.episodes)) {
+        return candidate.episodes;
+      }
+    }
+  }
+  return [];
+}
+
+function mapBasicRows(rows, limit = 20) {
+  return rows
+    .map((entry) => unwrapAnimeEntry(entry))
+    .filter(Boolean)
+    .slice(0, limit)
+    .map((entry) => toBasicAnime(entry));
+}
+
+function mapTypedRows(rows, limit = 20) {
+  return rows
+    .map((entry) => unwrapAnimeEntry(entry))
+    .filter(Boolean)
+    .slice(0, limit)
+    .map((entry) => ({
+      ...toBasicAnime(entry),
+      type: toSafeString(entry?.Type || entry?.type || 'TV'),
+    }));
+}
+
+function mapRankedRows(rows, limit = 20) {
+  return rows
+    .map((entry) => unwrapAnimeEntry(entry))
+    .filter(Boolean)
+    .slice(0, limit)
+    .map((entry, index) => ({ ...toBasicAnime(entry), rank: index + 1 }));
+}
+
+function normalizeGenresFromHome(homePayload) {
+  const rows = Array.isArray(homePayload?.genres) ? homePayload.genres : [];
+  const mapped = rows
+    .map((genre) => {
+      if (typeof genre === 'string') {
+        return toSafeString(genre);
+      }
+      if (genre && typeof genre === 'object') {
+        return toSafeString(genre?.name || genre?.title || genre?.genre);
+      }
+      return '';
+    })
+    .filter(Boolean);
+
+  return [...new Set(mapped)].slice(0, 80).map((name) => ({ name }));
+}
+
+function runInBackground(c, task) {
+  const promise = Promise.resolve()
+    .then(task)
+    .catch(() => null);
+  const waitUntil = c?.executionCtx?.waitUntil;
+  if (typeof waitUntil === 'function') {
+    waitUntil.call(c.executionCtx, promise);
+    return;
+  }
+  void promise;
 }
 
 async function getLatestEpisodes(c) {
@@ -49,79 +129,122 @@ async function getLatestEpisodes(c) {
 
 export async function getHomeData(c) {
   const config = getProviderConfig(c);
+  const homeCacheTtlMs = Math.min(300, config.catalogCacheTtlSeconds) * 1000;
   const cacheValid =
     sharedCache.homeData &&
-    now() - sharedCache.homeAt < Math.min(180, config.catalogCacheTtlSeconds) * 1000;
+    now() - sharedCache.homeAt < homeCacheTtlMs;
   if (cacheValid) {
     return sharedCache.homeData;
   }
 
-  const [homePayload, trendingPayload, popularPayload] = await Promise.all([
-    fetchApi('/home', c, { slugNth: 12, includeSlugs: false }),
-    fetchApi('/anime/trending', c, { page: 1, limit: 20 }),
-    fetchApi('/anime/popular', c, { page: 1, limit: 20 }),
-  ]);
+  if (sharedCache.homePromise) {
+    return sharedCache.homePromise;
+  }
 
-  const catalog = await loadCatalog(c);
-  const upcoming = catalog
-    .filter((entry) => normalizeText(entry.Status).includes('not yet') || normalizeText(entry.Status).includes('upcoming'))
-    .slice(0, 20);
-  const mostFavorite = [...catalog].sort((a, b) => b.__favorites - a.__favorites).slice(0, 20);
+  sharedCache.homePromise = (async () => {
+    try {
+      const homePayload = await fetchApi('/home', c, { slugNth: 12, includeSlugs: false });
 
-  const featured = Array.isArray(homePayload?.featured) ? homePayload.featured : [];
-  const currentlyAiring = homePayload?.currentlyAiring?.animes || [];
-  const finishedAiring = homePayload?.finishedAiring?.animes || [];
-  const latestAnime = homePayload?.latestAnime?.animes || [];
-  const latestEpisodesRows = homePayload?.latestEpisodes?.episodes || [];
+      const featured = pickCollection(homePayload?.featured, homePayload?.spotlight);
+      const currentlyAiring = pickCollection(homePayload?.currentlyAiring, homePayload?.topAiring);
+      const finishedAiring = pickCollection(homePayload?.finishedAiring, homePayload?.latestCompleted);
+      const latestAnime = pickCollection(homePayload?.latestAnime, homePayload?.newAdded);
+      const latestEpisodesRows = pickCollection(homePayload?.latestEpisodes, homePayload?.latestEpisode);
 
-  const latestEpisodesMapped = latestEpisodesRows
-    .map((entry) => unwrapAnimeEntry(entry))
-    .filter(Boolean)
-    .slice(0, 20);
+      let trending = pickCollection(homePayload?.trending);
+      let popular = pickCollection(homePayload?.mostPopular);
+      if (!trending.length || !popular.length) {
+        const [trendingResult, popularResult] = await Promise.allSettled([
+          trending.length ? Promise.resolve({ animes: trending }) : fetchApi('/anime/trending', c, { page: 1, limit: 20 }),
+          popular.length ? Promise.resolve({ animes: popular }) : fetchApi('/anime/popular', c, { page: 1, limit: 20 }),
+        ]);
+        if (!trending.length && trendingResult.status === 'fulfilled') {
+          trending = pickCollection(trendingResult.value?.animes);
+        }
+        if (!popular.length && popularResult.status === 'fulfilled') {
+          popular = pickCollection(popularResult.value?.animes);
+        }
+      }
 
-  const trending = Array.isArray(trendingPayload?.animes)
-    ? trendingPayload.animes.slice(0, 20)
-    : [];
-  const popular = Array.isArray(popularPayload?.animes) ? popularPayload.animes.slice(0, 20) : [];
+      const cachedCatalog = getCachedCatalog(c);
+      if (!cachedCatalog) {
+        runInBackground(c, () => warmCatalog(c));
+      }
+      const catalog = cachedCatalog || [];
 
-  const genres = [...new Set(catalog.flatMap((entry) => entry.genres || []).filter(Boolean))]
-    .map((genre) => ({ name: genre }))
-    .slice(0, 80);
+      const upcomingFromHome = pickCollection(homePayload?.topUpcoming);
+      const favoriteFromHome = pickCollection(homePayload?.mostFavorite);
+      const upcoming = upcomingFromHome.length
+        ? upcomingFromHome.slice(0, 20)
+        : catalog
+            .filter(
+              (entry) =>
+                normalizeText(entry.Status).includes('not yet') ||
+                normalizeText(entry.Status).includes('upcoming')
+            )
+            .slice(0, 20);
+      const mostFavorite = favoriteFromHome.length
+        ? favoriteFromHome.slice(0, 20)
+        : catalog.length
+          ? [...catalog].sort((a, b) => b.__favorites - a.__favorites).slice(0, 20)
+          : popular.slice(0, 20);
 
-  const response = {
-    spotlight: featured.map((entry, index) => toSpotlightAnime(unwrapAnimeEntry(entry), index + 1)),
-    trending: trending.map((entry, index) => ({ ...toBasicAnime(entry), rank: index + 1 })),
-    topAiring: currentlyAiring.map((entry) => ({
-      ...toBasicAnime(entry),
-      type: toSafeString(entry?.Type || 'TV'),
-    })),
-    mostPopular: popular.map((entry) => ({
-      ...toBasicAnime(entry),
-      type: toSafeString(entry?.Type || 'TV'),
-    })),
-    mostFavorite: mostFavorite.map((entry) => ({
-      ...toBasicAnime(entry),
-      type: toSafeString(entry?.Type || 'TV'),
-    })),
-    latestCompleted: finishedAiring.map((entry) => ({
-      ...toBasicAnime(entry),
-      type: toSafeString(entry?.Type || 'TV'),
-    })),
-    latestEpisode: latestEpisodesMapped.map((entry) => toBasicAnime(entry)),
-    newAdded: latestAnime.map((entry) => toBasicAnime(entry)),
-    topUpcoming: upcoming.map((entry) => toBasicAnime(entry)),
-    topTen: {
-      today: trending.slice(0, 10).map((entry) => toBasicAnime(entry)),
-      week: popular.slice(0, 10).map((entry) => toBasicAnime(entry)),
-      month: popular.slice(10, 20).map((entry) => toBasicAnime(entry)),
-    },
-    genres,
-  };
+      let genres = normalizeGenresFromHome(homePayload);
+      if (!genres.length && catalog.length) {
+        genres = [...new Set(catalog.flatMap((entry) => entry.genres || []).filter(Boolean))]
+          .slice(0, 80)
+          .map((genre) => ({ name: genre }));
+      }
+      if (!genres.length) {
+        genres = [...new Set((filterOptions?.genres || []).filter(Boolean))]
+          .slice(0, 80)
+          .map((genre) => ({ name: genre }));
+      }
 
-  sharedCache.homeData = response;
-  sharedCache.homeAt = now();
+      const response = {
+        spotlight: featured
+          .map((entry) => unwrapAnimeEntry(entry))
+          .filter(Boolean)
+          .map((entry, index) => toSpotlightAnime(entry, index + 1)),
+        trending: mapRankedRows(trending),
+        topAiring: mapTypedRows(currentlyAiring),
+        mostPopular: mapTypedRows(popular),
+        mostFavorite: mapTypedRows(mostFavorite),
+        latestCompleted: mapTypedRows(finishedAiring),
+        latestEpisode: mapBasicRows(latestEpisodesRows),
+        newAdded: mapBasicRows(latestAnime),
+        topUpcoming: mapBasicRows(upcoming),
+        topTen: {
+          today: (() => {
+            const rows = pickCollection(homePayload?.topTen?.today);
+            return mapBasicRows(rows.length ? rows : trending.slice(0, 10), 10);
+          })(),
+          week: (() => {
+            const rows = pickCollection(homePayload?.topTen?.week);
+            return mapBasicRows(rows.length ? rows : popular.slice(0, 10), 10);
+          })(),
+          month: (() => {
+            const rows = pickCollection(homePayload?.topTen?.month);
+            return mapBasicRows(rows.length ? rows : popular.slice(10, 20), 10);
+          })(),
+        },
+        genres,
+      };
 
-  return response;
+      sharedCache.homeData = response;
+      sharedCache.homeAt = now();
+      return response;
+    } catch (error) {
+      if (sharedCache.homeData) {
+        return sharedCache.homeData;
+      }
+      throw error;
+    } finally {
+      sharedCache.homePromise = null;
+    }
+  })();
+
+  return sharedCache.homePromise;
 }
 
 export async function getSpotlightData(c) {
