@@ -255,9 +255,13 @@ export async function getStreamData(id, serverName, type, c) {
     throw new NotFoundError('stream source not found');
   }
 
-  const selectedUrl = await pickStreamUrlWithFallback(selected._url, c);
+  const selectedUrlRaw = toSafeString(selected._url);
+  if (!selectedUrlRaw) {
+    throw new validationError('invalid stream source url');
+  }
 
-  if (isLikelyDirectMediaUrl(selectedUrl)) {
+  if (isLikelyDirectMediaUrl(selectedUrlRaw)) {
+    const selectedUrl = await pickStreamUrlWithFallback(selectedUrlRaw, c);
     return [
       {
         id,
@@ -276,7 +280,7 @@ export async function getStreamData(id, serverName, type, c) {
   }
 
   const resolvedStream = await resolveEmbeddedStreamData(
-    selectedUrl,
+    selectedUrlRaw,
     selected.name,
     normalizedType,
     id,
