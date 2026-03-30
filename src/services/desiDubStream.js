@@ -14,6 +14,27 @@ import { fetchJsonWithMeta, fetchTextWithFallback, getProviderConfig } from './u
 const MAX_LOOKUP_PAGES = 6;
 const MAX_SEARCH_HINTS = 2;
 
+function hasExecutionContext(c) {
+  try {
+    return Boolean(c?.executionCtx);
+  } catch {
+    return false;
+  }
+}
+
+function isLikelyWorkerRuntime(c) {
+  if (hasExecutionContext(c)) {
+    return true;
+  }
+  const hasWebSocketPair = typeof WebSocketPair !== 'undefined';
+  const hasEdgeCache =
+    typeof globalThis !== 'undefined' &&
+    globalThis?.caches &&
+    typeof globalThis.caches === 'object' &&
+    Boolean(globalThis.caches.default);
+  return hasWebSocketPair && hasEdgeCache;
+}
+
 function decodeBase64(value) {
   const input = toSafeString(value);
   if (!input) return '';
@@ -194,7 +215,7 @@ async function findMatchingHindiRowBySearch(input, c) {
   for (const keyword of lookupKeywords) {
     let payload = null;
     try {
-      payload = await getHindiDubbedSearchData(keyword, 1, false, c);
+      payload = await getHindiDubbedSearchData(keyword, 1, false, c, { allowWarmup: false });
     } catch {
       payload = null;
     }
@@ -219,7 +240,7 @@ async function findMatchingHindiRowBySearch(input, c) {
 
 async function findMatchingHindiRow(input, c) {
   const postIdHint = parseFallbackPostId(input) || parseNumericPostId(input);
-  const firstPage = await getHindiDubbedData(1, false, c);
+  const firstPage = await getHindiDubbedData(1, false, c, { allowWarmup: false });
   const firstRows = Array.isArray(firstPage?.response) ? firstPage.response : [];
   const firstMatch = firstRows.find(
     (row) =>
@@ -233,7 +254,7 @@ async function findMatchingHindiRow(input, c) {
     MAX_LOOKUP_PAGES
   );
   for (let page = 2; page <= totalPages; page += 1) {
-    const payload = await getHindiDubbedData(page, false, c);
+    const payload = await getHindiDubbedData(page, false, c, { allowWarmup: false });
     const rows = Array.isArray(payload?.response) ? payload.response : [];
     const match = rows.find(
       (row) =>
@@ -496,14 +517,16 @@ export async function getHindiDubbedAnimeDetailsData(id, c) {
   }
 
   const config = getProviderConfig(c);
-  const [animeHtml, catalog] = await Promise.all([
-    fetchTextWithFallback(source.url, c, config.desiDubSiteBaseUrl),
-    loadCatalog(c),
-  ]);
+  const animeHtml = await fetchTextWithFallback(source.url, c, config.desiDubSiteBaseUrl);
 
   const episodes = parseAnimeEpisodesFromHtml(animeHtml, source.url);
-  const matcherIndex = getCatalogMatcherIndex(catalog);
-  const mapping = resolveDesiDubMapping(source, catalog, matcherIndex);
+  const workerRuntime = isLikelyWorkerRuntime(c);
+  const cachedCatalog = getCachedCatalog(c);
+  const mappingCatalog =
+    cachedCatalog || (!workerRuntime ? await loadCatalog(c) : null);
+  const mapping = mappingCatalog
+    ? resolveDesiDubMapping(source, mappingCatalog, getCatalogMatcherIndex(mappingCatalog))
+    : getUnmappedMapping();
   const streamId = buildDesiFallbackId(source);
   const episodeCount = episodes.length;
 

@@ -347,16 +347,28 @@ function mapRowsToExplore(rows, mappedOnlyFlag, catalog, matcherIndex) {
     : mappedRows;
 }
 
-export async function getHindiDubbedData(page, mappedOnly, c) {
+export async function getHindiDubbedData(page, mappedOnly, c, options = {}) {
   const safePage = Math.max(1, toNumber(page, 1));
   const mappedOnlyFlag = toBoolean(mappedOnly);
+  const allowWarmup = options?.allowWarmup !== false;
+  const workerRuntime = isLikelyWorkerRuntime(c);
   const workerCtxAvailable = hasExecutionContext(c);
 
   const sourcePage = await fetchHindiDubPage(safePage, c);
   let catalog = getCachedCatalog(c);
 
   if (!catalog) {
-    if (workerCtxAvailable && !mappedOnlyFlag) {
+    if (workerRuntime && !mappedOnlyFlag) {
+      if (allowWarmup && workerCtxAvailable) {
+        scheduleCatalogWarmup(c);
+      }
+      return {
+        pageInfo: sourcePage.pageInfo,
+        response: toUnmappedRows(sourcePage.rows, mappedOnlyFlag),
+      };
+    }
+
+    if (allowWarmup && workerCtxAvailable && !mappedOnlyFlag) {
       scheduleCatalogWarmup(c);
     } else {
       catalog = await loadCatalog(c);
@@ -379,9 +391,10 @@ export async function getHindiDubbedData(page, mappedOnly, c) {
   };
 }
 
-export async function getHindiDubbedSearchData(keyword, page, mappedOnly, c) {
+export async function getHindiDubbedSearchData(keyword, page, mappedOnly, c, options = {}) {
   const safePage = Math.max(1, toNumber(page, 1));
   const mappedOnlyFlag = toBoolean(mappedOnly);
+  const allowWarmup = options?.allowWarmup !== false;
   const workerRuntime = isLikelyWorkerRuntime(c);
   const workerCtxAvailable = hasExecutionContext(c);
   const safeKeyword = toSafeString(keyword).replaceAll('+', ' ');
@@ -400,7 +413,7 @@ export async function getHindiDubbedSearchData(keyword, page, mappedOnly, c) {
       };
     }
 
-    if (workerCtxAvailable && !mappedOnlyFlag) {
+    if (allowWarmup && workerCtxAvailable && !mappedOnlyFlag) {
       scheduleCatalogWarmup(c);
     } else {
       catalog = await loadCatalog(c);
