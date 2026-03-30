@@ -14,6 +14,7 @@ import { getProviderConfig } from './upstream.js';
 const sharedCache = {
   catalog: null,
   catalogAt: 0,
+  catalogPromise: null,
   animeDetails: new Map(),
 };
 
@@ -52,31 +53,46 @@ export async function loadCatalog(c) {
     return sharedCache.catalog;
   }
 
-  const all = [];
-  let cursor = null;
-  let pages = 0;
+  if (sharedCache.catalogPromise) {
+    return sharedCache.catalogPromise;
+  }
 
-  while (pages < config.maxCatalogPages) {
-    const payload = await fetchApi('/anime', c, {
-      limit: 1000,
-      cursor: cursor || undefined,
-    });
-    const rows = Array.isArray(payload?.animes) ? payload.animes : [];
-    all.push(...rows.map(toNormalizedCatalogEntry));
-    pages += 1;
-    if (!payload?.hasNextPage || !payload?.nextCursor) {
-      break;
+  const inFlightPromise = (async () => {
+    const all = [];
+    let cursor = null;
+    let pages = 0;
+
+    while (pages < config.maxCatalogPages) {
+      const payload = await fetchApi('/anime', c, {
+        limit: 1000,
+        cursor: cursor || undefined,
+      });
+      const rows = Array.isArray(payload?.animes) ? payload.animes : [];
+      all.push(...rows.map(toNormalizedCatalogEntry));
+      pages += 1;
+      if (!payload?.hasNextPage || !payload?.nextCursor) {
+        break;
+      }
+      cursor = payload.nextCursor;
     }
-    cursor = payload.nextCursor;
-  }
 
-  if (all.length < 1) {
-    throw new NotFoundError('catalog not available');
-  }
+    if (all.length < 1) {
+      throw new NotFoundError('catalog not available');
+    }
 
-  sharedCache.catalog = all;
-  sharedCache.catalogAt = now();
-  return all;
+    sharedCache.catalog = all;
+    sharedCache.catalogAt = now();
+    return all;
+  })();
+
+  sharedCache.catalogPromise = inFlightPromise;
+  try {
+    return await inFlightPromise;
+  } finally {
+    if (sharedCache.catalogPromise === inFlightPromise) {
+      sharedCache.catalogPromise = null;
+    }
+  }
 }
 
 export function getCachedCatalog(c) {

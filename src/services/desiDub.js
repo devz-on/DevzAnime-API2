@@ -1,4 +1,4 @@
-import { loadCatalog } from './catalog.js';
+import { getCachedCatalog, loadCatalog, warmCatalog } from './catalog.js';
 import { toExploreAnime } from './normalizers.js';
 import { toNumber, toSafeString } from './normalizers.js';
 import { fetchJsonWithMeta, getProviderConfig } from './upstream.js';
@@ -267,6 +267,55 @@ function toBoolean(value) {
   return normalized === '1' || normalized === 'true' || normalized === 'yes';
 }
 
+function hasExecutionContext(c) {
+  try {
+    return Boolean(c?.executionCtx);
+  } catch {
+    return false;
+  }
+}
+
+function scheduleCatalogWarmup(c) {
+  const warmupPromise = warmCatalog(c);
+  let waitUntil = null;
+  let executionCtx = null;
+  try {
+    executionCtx = c?.executionCtx;
+    waitUntil = executionCtx?.waitUntil;
+  } catch {
+    waitUntil = null;
+    executionCtx = null;
+  }
+  if (typeof waitUntil === 'function') {
+    try {
+      waitUntil.call(executionCtx, warmupPromise);
+      return;
+    } catch {
+      // Some runtimes/test contexts expose waitUntil but do not provide ExecutionContext.
+    }
+  }
+  warmupPromise.catch(() => {
+    // Best-effort warmup only.
+  });
+}
+
+function toUnmappedRows(rows, mappedOnlyFlag) {
+  if (mappedOnlyFlag) {
+    return [];
+  }
+
+  return rows
+    .map((row) => normalizeDesiAnimeRow(row))
+    .map((source) =>
+      toUnmappedExploreItem(source, {
+        mapped: false,
+        daniId: null,
+        method: 'none',
+        confidence: 0,
+      })
+    );
+}
+
 function mapRowsToExplore(rows, mappedOnlyFlag, catalog, matcherIndex) {
   const mappedRows = rows
     .map((row) => normalizeDesiAnimeRow(row))
@@ -286,8 +335,26 @@ function mapRowsToExplore(rows, mappedOnlyFlag, catalog, matcherIndex) {
 export async function getHindiDubbedData(page, mappedOnly, c) {
   const safePage = Math.max(1, toNumber(page, 1));
   const mappedOnlyFlag = toBoolean(mappedOnly);
+  const workerCtxAvailable = hasExecutionContext(c);
 
-  const [sourcePage, catalog] = await Promise.all([fetchHindiDubPage(safePage, c), loadCatalog(c)]);
+  const sourcePage = await fetchHindiDubPage(safePage, c);
+  let catalog = getCachedCatalog(c);
+
+  if (!catalog) {
+    if (workerCtxAvailable && !mappedOnlyFlag) {
+      scheduleCatalogWarmup(c);
+    } else {
+      catalog = await loadCatalog(c);
+    }
+  }
+
+  if (!catalog) {
+    return {
+      pageInfo: sourcePage.pageInfo,
+      response: toUnmappedRows(sourcePage.rows, mappedOnlyFlag),
+    };
+  }
+
   const matcherIndex = getCatalogMatcherIndex(catalog);
   const filteredRows = mapRowsToExplore(sourcePage.rows, mappedOnlyFlag, catalog, matcherIndex);
 
@@ -300,15 +367,30 @@ export async function getHindiDubbedData(page, mappedOnly, c) {
 export async function getHindiDubbedSearchData(keyword, page, mappedOnly, c) {
   const safePage = Math.max(1, toNumber(page, 1));
   const mappedOnlyFlag = toBoolean(mappedOnly);
+  const workerCtxAvailable = hasExecutionContext(c);
   const safeKeyword = toSafeString(keyword).replaceAll('+', ' ');
   if (!safeKeyword) {
     throw new validationError('search keyword is required');
   }
 
-  const [searchPage, catalog] = await Promise.all([
-    fetchHindiDubSearchPage(safeKeyword, safePage, c),
-    loadCatalog(c),
-  ]);
+  const searchPage = await fetchHindiDubSearchPage(safeKeyword, safePage, c);
+  let catalog = getCachedCatalog(c);
+
+  if (!catalog) {
+    if (workerCtxAvailable && !mappedOnlyFlag) {
+      scheduleCatalogWarmup(c);
+    } else {
+      catalog = await loadCatalog(c);
+    }
+  }
+
+  if (!catalog) {
+    return {
+      pageInfo: searchPage.pageInfo,
+      response: toUnmappedRows(searchPage.rows, mappedOnlyFlag),
+    };
+  }
+
   const matcherIndex = getCatalogMatcherIndex(catalog);
   const filteredRows = mapRowsToExplore(searchPage.rows, mappedOnlyFlag, catalog, matcherIndex);
 
