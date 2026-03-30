@@ -4,6 +4,10 @@ import { normalizeText, slugify, toNumber, toSafeString } from './normalizers.js
 
 export const DESIDUB_FUZZY_THRESHOLD = 0.72;
 const DESIDUB_ID_PREFIX = 'desidub';
+const matcherIndexCache = {
+  catalogRef: null,
+  index: null,
+};
 
 const NAMED_ENTITY_MAP = {
   amp: '&',
@@ -349,6 +353,18 @@ export function buildCatalogMatcherIndex(catalog) {
   return index;
 }
 
+export function getCatalogMatcherIndex(catalog) {
+  const rows = Array.isArray(catalog) ? catalog : [];
+  if (matcherIndexCache.catalogRef === rows && Array.isArray(matcherIndexCache.index)) {
+    return matcherIndexCache.index;
+  }
+
+  const index = buildCatalogMatcherIndex(rows);
+  matcherIndexCache.catalogRef = rows;
+  matcherIndexCache.index = index;
+  return index;
+}
+
 function scoreCandidatePair(sourceFeature, targetFeature) {
   const tokenScore = tokenDiceScore(sourceFeature?.tokenSet, targetFeature?.tokenSet);
   const gramScore = charDiceScore(sourceFeature?.charSet, targetFeature?.charSet);
@@ -445,7 +461,7 @@ function findExactMatchFromIndex(sourceCandidates, matcherIndex) {
 
 export function resolveDesiDubMapping(source, catalog, matcherIndex, options = {}) {
   const rows = Array.isArray(catalog) ? catalog : [];
-  const index = Array.isArray(matcherIndex) ? matcherIndex : buildCatalogMatcherIndex(rows);
+  const index = Array.isArray(matcherIndex) ? matcherIndex : getCatalogMatcherIndex(rows);
   const overrides = options.overrides || desiDubMapOverrides;
   const threshold = Number(options.threshold);
   const safeThreshold = Number.isFinite(threshold) ? threshold : DESIDUB_FUZZY_THRESHOLD;

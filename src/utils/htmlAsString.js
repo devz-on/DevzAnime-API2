@@ -328,8 +328,8 @@ export const htmlAsString = `
               <section class="section">
                   <h2>🔧 Quick Start</h2>
                   <div class="card">
-                      <pre><code>git clone https://github.com/yahyaMomin/hianime-API.git
-    cd hianime-API
+                      <pre><code>git clone https://github.com/Devz-ON/DevzAnime-API2.git
+    cd DevzAnime-API2
     bun install
     bun run dev</code></pre>
                       <p>Server runs on <code>http://localhost:3030</code></p>
@@ -340,19 +340,19 @@ export const htmlAsString = `
           <footer>
               <p>
                   Built by
-                  <a href="https://github.com/yahyaMomin" target="_blank"
-                      >yahyaMomin</a
+                  <a href="https://github.com/Devz-ON" target="_blank"
+                      >Devz-ON</a
                   >
                   ·
                   <a
-                      href="https://github.com/yahyaMomin/hianime-API"
+                      href="https://github.com/Devz-ON/DevzAnime-API2"
                       target="_blank"
                   >
                       GitHub
                   </a>
                   ·
                   <a
-                      href="https://github.com/yahyaMomin/watanuki"
+                      href="https://github.com/Devz-ON/watanuki"
                       target="_blank"
                   >
                       Frontend Example

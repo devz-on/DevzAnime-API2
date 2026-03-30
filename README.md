@@ -1,4 +1,4 @@
-# DevzAnime-API
+# DevzAnimeAPI2
 
 Unofficial REST API for scraping anime data from hianime.
 
@@ -20,9 +20,9 @@ Unofficial REST API for scraping anime data from hianime.
 
 To fully use this API in production, you also need to deploy **AniProx**:
 
-- https://github.com/devz-on/AniProx
+- https://github.com/Devz-ON/AniProx
 
-`DevzAnime-API` provides anime metadata and stream source discovery, but production-grade playback usually requires a dedicated media proxy layer (for m3u8/segment/caption requests, upstream header handling, and cross-origin compatibility).  
+`DevzAnimeAPI2` provides anime metadata and stream source discovery, but production-grade playback usually requires a dedicated media proxy layer (for m3u8/segment/caption requests, upstream header handling, and cross-origin compatibility).  
 Use AniProx as that proxy layer in front of stream/caption/thumbnail media requests.
 
 ## Local setup
@@ -134,7 +134,7 @@ Supported query params:
 
 ## Deploy To Cloudflare (easy way)
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/devz-on/DevzAnime-Api)
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Devz-ON/DevzAnime-API2)
 
 This repo includes `src/worker.js` and `wrangler.toml` for native Workers deployment.
 

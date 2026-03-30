@@ -2,7 +2,7 @@ import { loadCatalog } from './catalog.js';
 import { toExploreAnime } from './normalizers.js';
 import { toNumber, toSafeString } from './normalizers.js';
 import { fetchJsonWithMeta, getProviderConfig } from './upstream.js';
-import { buildCatalogMatcherIndex, buildDesiFallbackId, decodeHtmlEntities, resolveDesiDubMapping } from './desiDubMapper.js';
+import { buildDesiFallbackId, decodeHtmlEntities, getCatalogMatcherIndex, resolveDesiDubMapping } from './desiDubMapper.js';
 import { validationError } from '../utils/errors.js';
 
 const PAGE_SIZE = 20;
@@ -288,7 +288,7 @@ export async function getHindiDubbedData(page, mappedOnly, c) {
   const mappedOnlyFlag = toBoolean(mappedOnly);
 
   const [sourcePage, catalog] = await Promise.all([fetchHindiDubPage(safePage, c), loadCatalog(c)]);
-  const matcherIndex = buildCatalogMatcherIndex(catalog);
+  const matcherIndex = getCatalogMatcherIndex(catalog);
   const filteredRows = mapRowsToExplore(sourcePage.rows, mappedOnlyFlag, catalog, matcherIndex);
 
   return {
@@ -309,7 +309,7 @@ export async function getHindiDubbedSearchData(keyword, page, mappedOnly, c) {
     fetchHindiDubSearchPage(safeKeyword, safePage, c),
     loadCatalog(c),
   ]);
-  const matcherIndex = buildCatalogMatcherIndex(catalog);
+  const matcherIndex = getCatalogMatcherIndex(catalog);
   const filteredRows = mapRowsToExplore(searchPage.rows, mappedOnlyFlag, catalog, matcherIndex);
 
   return {

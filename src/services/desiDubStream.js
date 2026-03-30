@@ -1,17 +1,18 @@
 import { load } from 'cheerio';
 import { NotFoundError, validationError } from '../utils/errors.js';
-import { loadCatalog } from './catalog.js';
-import { getHindiDubbedData, normalizeDesiAnimeRow } from './desiDub.js';
+import { getCachedCatalog, loadCatalog } from './catalog.js';
+import { getHindiDubbedData, getHindiDubbedSearchData, normalizeDesiAnimeRow } from './desiDub.js';
 import {
-  buildCatalogMatcherIndex,
   buildDesiFallbackId,
   decodeHtmlEntities,
+  getCatalogMatcherIndex,
   resolveDesiDubMapping,
 } from './desiDubMapper.js';
 import { isLikelyDirectMediaUrl, mediaTypeForUrl, slugify, toNumber, toSafeString } from './normalizers.js';
 import { fetchJsonWithMeta, fetchTextWithFallback, getProviderConfig } from './upstream.js';
 
-const MAX_LOOKUP_PAGES = 20;
+const MAX_LOOKUP_PAGES = 6;
+const MAX_SEARCH_HINTS = 2;
 
 function decodeBase64(value) {
   const input = toSafeString(value);
@@ -129,11 +130,102 @@ function rowMatchesInput(row, input, postIdHint) {
   return false;
 }
 
+function sourceMatchesInput(source, input, postIdHint) {
+  const safeInput = toSafeString(input).toLowerCase();
+  if (!safeInput || !source || typeof source !== 'object') return false;
+
+  const sourcePostId = toNumber(source.postId, 0);
+  const sourceSlug = toSafeString(source.slug).toLowerCase();
+  const fallbackId = toSafeString(buildDesiFallbackId(source)).toLowerCase();
+  const sourceUrlSlug = parseInputSlug(source.url).toLowerCase();
+
+  if (postIdHint > 0 && sourcePostId === postIdHint) return true;
+  if (sourceSlug && sourceSlug === safeInput) return true;
+  if (sourceUrlSlug && sourceUrlSlug === safeInput) return true;
+  if (fallbackId && fallbackId === safeInput) return true;
+
+  return false;
+}
+
+function buildLookupKeywords(input) {
+  const rawInput = toSafeString(input);
+  const slugInput = parseInputSlug(rawInput);
+  const slugWithoutNumeric = slugInput.replace(/-\d+$/, '');
+  const fromSlug = slugWithoutNumeric.replace(/-/g, ' ').trim();
+  const fromRaw = rawInput
+    .replace(/https?:\/\/[^/]+/i, ' ')
+    .replace(/[^\w-]+/g, ' ')
+    .replace(/-/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return dedupeBy([fromSlug, fromRaw], (value) => value).filter((value) => value.length >= 3);
+}
+
+async function fetchAnimePostFromRow(row, c) {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+
+  const fallbackPostId = parseFallbackPostId(row.streamId || row.id);
+  if (fallbackPostId > 0) {
+    const byFallbackId = await fetchAnimePostById(fallbackPostId, c);
+    if (byFallbackId) return byFallbackId;
+  }
+
+  if (row?.mapping?.source?.postId) {
+    const byPostId = await fetchAnimePostById(toNumber(row.mapping.source.postId, 0), c);
+    if (byPostId) return byPostId;
+  }
+
+  if (row?.mapping?.source?.slug) {
+    const bySlug = await fetchAnimePostBySlug(row.mapping.source.slug, c);
+    if (bySlug) return bySlug;
+  }
+
+  return null;
+}
+
+async function findMatchingHindiRowBySearch(input, c) {
+  const postIdHint = parseFallbackPostId(input) || parseNumericPostId(input);
+  const normalizedInput = toSafeString(input).toLowerCase();
+  const lookupKeywords = buildLookupKeywords(input).slice(0, MAX_SEARCH_HINTS);
+
+  for (const keyword of lookupKeywords) {
+    let payload = null;
+    try {
+      payload = await getHindiDubbedSearchData(keyword, 1, false, c);
+    } catch {
+      payload = null;
+    }
+    if (!payload) continue;
+
+    const rows = Array.isArray(payload?.response) ? payload.response : [];
+    const directMatch = rows.find((row) => rowMatchesInput(row, input, postIdHint));
+    if (directMatch) {
+      return directMatch;
+    }
+
+    const mappedMatch = rows.find(
+      (row) => toSafeString(row?.mapping?.daniId).toLowerCase() === normalizedInput
+    );
+    if (mappedMatch) {
+      return mappedMatch;
+    }
+  }
+
+  return null;
+}
+
 async function findMatchingHindiRow(input, c) {
   const postIdHint = parseFallbackPostId(input) || parseNumericPostId(input);
   const firstPage = await getHindiDubbedData(1, false, c);
   const firstRows = Array.isArray(firstPage?.response) ? firstPage.response : [];
-  const firstMatch = firstRows.find((row) => rowMatchesInput(row, input, postIdHint));
+  const firstMatch = firstRows.find(
+    (row) =>
+      rowMatchesInput(row, input, postIdHint) ||
+      sourceMatchesInput(row?.mapping?.source, input, postIdHint)
+  );
   if (firstMatch) return firstMatch;
 
   const totalPages = Math.min(
@@ -143,7 +235,11 @@ async function findMatchingHindiRow(input, c) {
   for (let page = 2; page <= totalPages; page += 1) {
     const payload = await getHindiDubbedData(page, false, c);
     const rows = Array.isArray(payload?.response) ? payload.response : [];
-    const match = rows.find((row) => rowMatchesInput(row, input, postIdHint));
+    const match = rows.find(
+      (row) =>
+        rowMatchesInput(row, input, postIdHint) ||
+        sourceMatchesInput(row?.mapping?.source, input, postIdHint)
+    );
     if (match) {
       return match;
     }
@@ -171,13 +267,15 @@ export async function resolveAnimePostByInput(input, c) {
     if (post) return post;
   }
 
-  const matchingRow = await findMatchingHindiRow(input, c);
-  if (matchingRow?.mapping?.source?.postId) {
-    const post = await fetchAnimePostById(toNumber(matchingRow.mapping.source.postId, 0), c);
+  const searchMatch = await findMatchingHindiRowBySearch(input, c);
+  if (searchMatch) {
+    const post = await fetchAnimePostFromRow(searchMatch, c);
     if (post) return post;
   }
-  if (matchingRow?.mapping?.source?.slug) {
-    const post = await fetchAnimePostBySlug(matchingRow.mapping.source.slug, c);
+
+  const matchingRow = await findMatchingHindiRow(input, c);
+  if (matchingRow) {
+    const post = await fetchAnimePostFromRow(matchingRow, c);
     if (post) return post;
   }
 
@@ -363,6 +461,15 @@ function toMappingInfo(mapping) {
   };
 }
 
+function getUnmappedMapping() {
+  return {
+    mapped: false,
+    daniId: null,
+    method: 'none',
+    confidence: 0,
+  };
+}
+
 function toEpisodeId(postId, episodeNumber) {
   const safePostId = toNumber(postId, 0) || 'unknown';
   const safeEpisode = Math.max(1, toNumber(episodeNumber, 1));
@@ -395,7 +502,7 @@ export async function getHindiDubbedAnimeDetailsData(id, c) {
   ]);
 
   const episodes = parseAnimeEpisodesFromHtml(animeHtml, source.url);
-  const matcherIndex = buildCatalogMatcherIndex(catalog);
+  const matcherIndex = getCatalogMatcherIndex(catalog);
   const mapping = resolveDesiDubMapping(source, catalog, matcherIndex);
   const streamId = buildDesiFallbackId(source);
   const episodeCount = episodes.length;
@@ -447,10 +554,7 @@ export async function getHindiDubbedStreamData(id, episode, server, c) {
   }
 
   const config = getProviderConfig(c);
-  const [animeHtml, catalog] = await Promise.all([
-    fetchTextWithFallback(source.url, c, config.desiDubSiteBaseUrl),
-    loadCatalog(c),
-  ]);
+  const animeHtml = await fetchTextWithFallback(source.url, c, config.desiDubSiteBaseUrl);
 
   const episodes = parseAnimeEpisodesFromHtml(animeHtml, source.url);
   const selectedEpisode = pickEpisode(episodes, episode);
@@ -462,8 +566,10 @@ export async function getHindiDubbedStreamData(id, episode, server, c) {
     throw new NotFoundError('stream links not found for requested episode/server');
   }
 
-  const matcherIndex = buildCatalogMatcherIndex(catalog);
-  const mapping = resolveDesiDubMapping(source, catalog, matcherIndex);
+  const cachedCatalog = getCachedCatalog(c);
+  const mapping = cachedCatalog
+    ? resolveDesiDubMapping(source, cachedCatalog, getCatalogMatcherIndex(cachedCatalog))
+    : getUnmappedMapping();
   const streamId = buildDesiFallbackId(source);
   const episodeId = toEpisodeId(source.postId, selectedEpisode.number);
 
