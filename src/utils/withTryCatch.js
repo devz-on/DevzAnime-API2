@@ -4,6 +4,7 @@ import { collectError } from '../workers/errorCollector.worker.js';
 const CACHE_EXCLUDED_PATH_PATTERNS = [
   /^\/(?:api\/v1|v1)\/proxy(?:\/|$)/i,
   /^\/(?:api\/v1|v1)\/stream(?:\/|$)/i,
+  /^\/(?:api\/v1|v1)\/hindi-dubbed\/stream(?:\/|$)/i,
   /^\/(?:api\/v1|v1)\/servers(?:\/|$)/i,
   /^\/(?:api\/v1|v1)\/errors(?:\/|$)/i,
 ];

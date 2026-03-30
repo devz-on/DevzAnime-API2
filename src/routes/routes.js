@@ -22,6 +22,10 @@ import * as monthlySchedule from '../modules/schedule/monthlySchedule/index.js';
 import * as nextEpSchedule from '../modules/schedule/nextEpSchedule/index.js';
 import * as meta from '../modules/meta/index.js';
 import * as errorCollector from '../modules/errorCollector/index.js';
+import * as hindiDubbed from '../modules/hindiDubbed/index.js';
+import * as hindiDubbedSearch from '../modules/hindiDubbedSearch/index.js';
+import * as hindiDubbedDetails from '../modules/hindiDubbedDetails/index.js';
+import * as hindiDubbedStream from '../modules/hindiDubbedStream/index.js';
 import withTryCatch from '../utils/withTryCatch.js';
 
 const router = createRouter();
@@ -48,6 +52,10 @@ const routes = [
   nextEpSchedule,
   meta,
   errorCollector,
+  hindiDubbed,
+  hindiDubbedSearch,
+  hindiDubbedDetails,
+  hindiDubbedStream,
   explore,
 ];
 

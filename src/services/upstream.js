@@ -30,6 +30,14 @@ export function getRuntimeEnv(c) {
 
 export function getProviderConfig(c) {
   const env = getRuntimeEnv(c);
+  const desiDubSiteBaseUrl = toSafeString(env.DESIDUB_SITE_BASE_URL || 'https://www.desidubanime.me').replace(
+    /\/+$/,
+    ''
+  );
+  const desiDubWpApiBaseUrl = toSafeString(
+    env.DESIDUB_WP_API_BASE_URL || `${desiDubSiteBaseUrl}/wp-json/wp/v2`
+  ).replace(/\/+$/, '');
+
   return {
     hianimesApiBaseUrl: toSafeString(env.HIANIMES_API_BASE_URL || 'https://9animes.cv/api').replace(
       /\/+$/,
@@ -51,6 +59,11 @@ export function getProviderConfig(c) {
     catalogCacheTtlSeconds: Math.max(60, toNumber(env.CATALOG_CACHE_TTL_SECONDS, 900)),
     detailCacheTtlSeconds: Math.max(60, toNumber(env.DETAIL_CACHE_TTL_SECONDS, 300)),
     maxCatalogPages: Math.max(1, toNumber(env.CATALOG_MAX_PAGES, 6)),
+    desiDubSiteBaseUrl,
+    desiDubWpApiBaseUrl,
+    desiDubTagSlug: toSafeString(env.DESIDUB_TAG_SLUG || 'hindi') || 'hindi',
+    desiDubTagId: Math.max(0, toNumber(env.DESIDUB_TAG_ID, 0)),
+    desiDubCacheTtlSeconds: Math.max(60, toNumber(env.DESIDUB_CACHE_TTL_SECONDS, 300)),
   };
 }
 
@@ -102,38 +115,11 @@ async function readJson(response) {
   }
 }
 
-async function fetchJsonFromUrl(url, referer) {
-  const response = await fetchWithTimeout(url, {
-    headers: {
-      Accept: 'application/json, text/plain, */*',
-      Referer: referer,
-      Origin: (() => {
-        try {
-          return new URL(referer).origin;
-        } catch {
-          return undefined;
-        }
-      })(),
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
-    },
-  });
-
-  if (!response.ok) {
-    const payload = await readJson(response);
-    const message = payload?.message || `upstream failed (${response.status})`;
-    throw new validationError(message, { statusCode: response.status, upstream: url });
-  }
-
-  const payload = await readJson(response);
-  if (payload === null) {
-    throw new validationError('upstream returned invalid json', { upstream: url });
-  }
-
-  return payload;
+async function readText(response) {
+  return response.text();
 }
 
-export async function fetchJsonWithFallback(targetUrl, c, overrideReferer) {
+async function fetchJsonWithResponse(targetUrl, c, overrideReferer) {
   const config = getProviderConfig(c);
   const referer = overrideReferer || config.hianimesReferer;
   const candidates = [
@@ -145,13 +131,126 @@ export async function fetchJsonWithFallback(targetUrl, c, overrideReferer) {
   let lastError = null;
   for (const candidate of candidates) {
     try {
-      return await fetchJsonFromUrl(candidate, referer);
+      const response = await fetchWithTimeout(candidate, {
+        headers: {
+          Accept: 'application/json, text/plain, */*',
+          Referer: referer,
+          Origin: (() => {
+            try {
+              return new URL(referer).origin;
+            } catch {
+              return undefined;
+            }
+          })(),
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
+        },
+      });
+
+      if (!response.ok) {
+        const payload = await readJson(response);
+        const message = payload?.message || `upstream failed (${response.status})`;
+        throw new validationError(message, { statusCode: response.status, upstream: candidate });
+      }
+
+      const payload = await readJson(response);
+      if (payload === null) {
+        throw new validationError('upstream returned invalid json', { upstream: candidate });
+      }
+
+      return {
+        payload,
+        response,
+        upstreamUrl: candidate,
+      };
     } catch (error) {
       lastError = error;
     }
   }
 
   throw lastError || new validationError('failed to fetch upstream data');
+}
+
+async function fetchTextWithResponse(targetUrl, c, overrideReferer) {
+  const config = getProviderConfig(c);
+  const referer = overrideReferer || config.hianimesReferer;
+  const candidates = [
+    targetUrl,
+    buildProxyUrl(config.m3u8ProxyUrl, targetUrl, referer),
+    buildProxyUrl(config.daniProxyUrl, targetUrl, referer),
+  ].filter(Boolean);
+
+  let lastError = null;
+  for (const candidate of candidates) {
+    try {
+      const response = await fetchWithTimeout(candidate, {
+        headers: {
+          Accept: 'text/html,application/json,text/plain,*/*',
+          Referer: referer,
+          Origin: (() => {
+            try {
+              return new URL(referer).origin;
+            } catch {
+              return undefined;
+            }
+          })(),
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
+        },
+      });
+
+      if (!response.ok) {
+        const payload = await readJson(response);
+        const message = payload?.message || `upstream failed (${response.status})`;
+        throw new validationError(message, { statusCode: response.status, upstream: candidate });
+      }
+
+      const text = await readText(response);
+      if (!toSafeString(text)) {
+        throw new validationError('upstream returned empty text', { upstream: candidate });
+      }
+
+      return {
+        text,
+        response,
+        upstreamUrl: candidate,
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new validationError('failed to fetch upstream text');
+}
+
+export async function fetchJsonWithFallback(targetUrl, c, overrideReferer) {
+  const result = await fetchJsonWithResponse(targetUrl, c, overrideReferer);
+  return result.payload;
+}
+
+export async function fetchJsonWithMeta(targetUrl, c, overrideReferer) {
+  const { payload, response, upstreamUrl } = await fetchJsonWithResponse(targetUrl, c, overrideReferer);
+  return {
+    payload,
+    headers: response.headers,
+    statusCode: response.status,
+    upstreamUrl,
+  };
+}
+
+export async function fetchTextWithFallback(targetUrl, c, overrideReferer) {
+  const result = await fetchTextWithResponse(targetUrl, c, overrideReferer);
+  return result.text;
+}
+
+export async function fetchTextWithMeta(targetUrl, c, overrideReferer) {
+  const { text, response, upstreamUrl } = await fetchTextWithResponse(targetUrl, c, overrideReferer);
+  return {
+    text,
+    headers: response.headers,
+    statusCode: response.status,
+    upstreamUrl,
+  };
 }
 
 export async function fetchApi(path, c, params = {}) {

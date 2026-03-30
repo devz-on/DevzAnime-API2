@@ -54,6 +54,11 @@ JIKAN_API_BASE_URL=https://api.jikan.moe/v4
 CATALOG_CACHE_TTL_SECONDS=900
 DETAIL_CACHE_TTL_SECONDS=300
 CATALOG_MAX_PAGES=6
+DESIDUB_SITE_BASE_URL=https://www.desidubanime.me
+DESIDUB_WP_API_BASE_URL=https://www.desidubanime.me/wp-json/wp/v2
+DESIDUB_TAG_SLUG=hindi
+DESIDUB_TAG_ID=
+DESIDUB_CACHE_TTL_SECONDS=300
 PROXY_CACHE_MODE=bandwidth
 PROXY_TIMEOUT_MS=10000
 PROXY_RETRY_COUNT=1
@@ -176,6 +181,10 @@ Vercel URLs:
 - `GET /api/v1/anime/{animeId}`
 - `GET /api/v1/search?keyword={query}&page={page}`
 - `GET /api/v1/search/suggestion?keyword={query}`
+- `GET /api/v1/hindi-dubbed?page={page}&mappedOnly={true|false}`
+- `GET /api/v1/hindi-dubbed/search?keyword={query}&page={page}&mappedOnly={true|false}`
+- `GET /api/v1/hindi-dubbed/anime/{streamId|postId|slug|mappedId}`
+- `GET /api/v1/hindi-dubbed/stream?id={streamId|postId|slug|mappedId}&episode={n}&server={name}`
 - `GET /api/v1/episodes/{animeId}`
 - `GET /api/v1/servers?id={episodeId}`
 - `GET /api/v1/stream?id={episodeId}&server={server}&type={sub|dub}`

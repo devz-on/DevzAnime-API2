@@ -25,7 +25,7 @@
     "dev:workers": "wrangler dev --port 8787",
     "deploy:workers": "wrangler deploy",
     "deploy:workers:dry-run": "wrangler deploy --dry-run",
-    "test": "vitest"
+    "test": "node src/services/desiDubMapper.test.js && node src/services/desiDub.test.js && node src/modules/hindiDubbed/hindiDubbed.route.test.js && node src/modules/hindiDubbedSearch/hindiDubbedSearch.route.test.js && node src/modules/hindiDubbedDetails/hindiDubbedDetails.route.test.js && node src/modules/hindiDubbedStream/hindiDubbedStream.route.test.js"
   },
   "dependencies": {
     "@hono/swagger-ui": "^0.5.3",
