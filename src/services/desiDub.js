@@ -275,6 +275,21 @@ function hasExecutionContext(c) {
   }
 }
 
+function isLikelyWorkerRuntime(c) {
+  if (hasExecutionContext(c)) {
+    return true;
+  }
+
+  const hasWebSocketPair = typeof WebSocketPair !== 'undefined';
+  const hasEdgeCache =
+    typeof globalThis !== 'undefined' &&
+    globalThis?.caches &&
+    typeof globalThis.caches === 'object' &&
+    Boolean(globalThis.caches.default);
+
+  return hasWebSocketPair && hasEdgeCache;
+}
+
 function scheduleCatalogWarmup(c) {
   const warmupPromise = warmCatalog(c);
   let waitUntil = null;
@@ -367,6 +382,7 @@ export async function getHindiDubbedData(page, mappedOnly, c) {
 export async function getHindiDubbedSearchData(keyword, page, mappedOnly, c) {
   const safePage = Math.max(1, toNumber(page, 1));
   const mappedOnlyFlag = toBoolean(mappedOnly);
+  const workerRuntime = isLikelyWorkerRuntime(c);
   const workerCtxAvailable = hasExecutionContext(c);
   const safeKeyword = toSafeString(keyword).replaceAll('+', ' ');
   if (!safeKeyword) {
@@ -377,6 +393,13 @@ export async function getHindiDubbedSearchData(keyword, page, mappedOnly, c) {
   let catalog = getCachedCatalog(c);
 
   if (!catalog) {
+    if (workerRuntime && !mappedOnlyFlag) {
+      return {
+        pageInfo: searchPage.pageInfo,
+        response: toUnmappedRows(searchPage.rows, mappedOnlyFlag),
+      };
+    }
+
     if (workerCtxAvailable && !mappedOnlyFlag) {
       scheduleCatalogWarmup(c);
     } else {
