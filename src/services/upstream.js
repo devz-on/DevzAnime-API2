@@ -86,6 +86,10 @@ export function buildProxyUrl(proxyBaseUrl, targetUrl, referer) {
   url.searchParams.set('url', targetUrl);
   if (referer) {
     url.searchParams.set('referer', referer);
+    const pathname = url.pathname.replace(/\/+$/, '').toLowerCase();
+    if (pathname.endsWith('/m3u8-proxy')) {
+      url.searchParams.set('headers', JSON.stringify({ referer }));
+    }
   }
   return url.toString();
 }

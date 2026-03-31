@@ -121,6 +121,39 @@ function buildWorkerProxyUrl(c, targetUrl, referer) {
   }
 }
 
+function isM3u8ProxyStyleEndpoint(value) {
+  const input = toSafeString(value);
+  if (!input) return false;
+  try {
+    return new URL(input).pathname.replace(/\/+$/, '').toLowerCase().endsWith('/m3u8-proxy');
+  } catch {
+    return false;
+  }
+}
+
+function buildUpstreamProxyPlaybackUrl(proxyBaseUrl, targetUrl, referer) {
+  const proxyBase = toSafeString(proxyBaseUrl);
+  const safeTarget = toSafeString(targetUrl);
+  if (!proxyBase || !safeTarget) {
+    return '';
+  }
+
+  try {
+    const url = new URL(proxyBase);
+    url.searchParams.set('url', safeTarget);
+    if (toSafeString(referer)) {
+      const safeReferer = toSafeString(referer);
+      url.searchParams.set('referer', safeReferer);
+      if (isM3u8ProxyStyleEndpoint(proxyBase)) {
+        url.searchParams.set('headers', JSON.stringify({ referer: safeReferer }));
+      }
+    }
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
 function dedupeBy(values, keyBuilder) {
   const seen = new Set();
   const output = [];
@@ -1046,11 +1079,12 @@ export async function getHindiDubbedStreamData(id, episode, server, c) {
       type: 'dub',
       link: {
         file: (() => {
+          const safeReferer = toSafeString(stream.referer || `${config.desiDubSiteBaseUrl}/`);
           // ASN-bound tokens are often tied to the viewer network; proxying from server IP causes 403.
           if (isAsnBoundUrl(stream.url)) {
-            return stream.url;
+            const upstreamProxyUrl = buildUpstreamProxyPlaybackUrl(config.m3u8ProxyUrl, stream.url, safeReferer);
+            return upstreamProxyUrl || stream.url;
           }
-          const safeReferer = toSafeString(stream.referer || `${config.desiDubSiteBaseUrl}/`);
           return buildWorkerProxyUrl(c, stream.url, safeReferer);
         })(),
         type: isLikelyDirectMediaUrl(stream.url) ? mediaTypeForUrl(stream.url) : 'text/html',
