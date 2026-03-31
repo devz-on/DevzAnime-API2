@@ -824,6 +824,20 @@ async function loadEpisodesForAnime(source, c) {
   }
 }
 
+function buildWatchEpisodeUrl(source, episodeNumber, siteBaseUrl) {
+  const safeEpisode = parseEpisodeNumber(episodeNumber);
+  if (safeEpisode <= 0) {
+    return '';
+  }
+  const slug = toSafeString(parseInputSlug(source?.url) || source?.slug);
+  if (!slug) {
+    return '';
+  }
+  const safeBaseUrl = toSafeString(siteBaseUrl).replace(/\/+$/, '');
+  const target = `${safeBaseUrl}/watch/${slug}-episode-${safeEpisode}/`;
+  return toAbsoluteUrl(target, safeBaseUrl);
+}
+
 export async function getHindiDubbedAnimeDetailsData(id, c) {
   const inputId = toSafeString(id);
   if (!inputId) {
@@ -894,9 +908,34 @@ export async function getHindiDubbedStreamData(id, episode, server, c) {
   }
 
   const config = getProviderConfig(c);
-  const episodes = await loadEpisodesForAnime(source, c);
-  const selectedEpisode = pickEpisode(episodes, episode);
-  const watchHtml = await fetchTextWithFallback(selectedEpisode.url, c, config.desiDubSiteBaseUrl);
+  const requestedEpisode = parseEpisodeNumber(episode);
+  let episodes = [];
+  let selectedEpisode = null;
+  let watchHtml = '';
+
+  const quickWatchUrl = buildWatchEpisodeUrl(source, requestedEpisode, config.desiDubSiteBaseUrl);
+  if (quickWatchUrl) {
+    const quickWatchHtml = await fetchTextWithFallback(quickWatchUrl, c, config.desiDubSiteBaseUrl).catch(() => '');
+    if (quickWatchHtml) {
+      const quickParsedStreams = parseStreamsFromWatchHtml(quickWatchHtml, quickWatchUrl);
+      if (quickParsedStreams.length > 0) {
+        selectedEpisode = {
+          number: requestedEpisode,
+          title: `Episode ${requestedEpisode}`,
+          url: quickWatchUrl,
+          slug: parseInputSlug(quickWatchUrl),
+        };
+        watchHtml = quickWatchHtml;
+      }
+    }
+  }
+
+  if (!selectedEpisode?.url) {
+    episodes = await loadEpisodesForAnime(source, c);
+    selectedEpisode = pickEpisode(episodes, episode);
+    watchHtml = await fetchTextWithFallback(selectedEpisode.url, c, config.desiDubSiteBaseUrl);
+  }
+
   const parsedStreams = parseStreamsFromWatchHtml(watchHtml, selectedEpisode.url);
   const playableStreams = await buildPlayableStreams(parsedStreams, selectedEpisode.url, c);
   const filteredStreams = filterStreamsByServer(playableStreams, server);
@@ -927,7 +966,10 @@ export async function getHindiDubbedStreamData(id, episode, server, c) {
       number: toNumber(selectedEpisode.number, 0),
       title: selectedEpisode.title,
       url: selectedEpisode.url,
-      totalEpisodes: episodes.length,
+      totalEpisodes:
+        episodes.length > 0
+          ? episodes.length
+          : Math.max(1, parseEpisodeNumber(selectedEpisode.number || requestedEpisode)),
     },
     streams: filteredStreams.map((stream) => ({
       id: episodeId,
