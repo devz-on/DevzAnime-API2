@@ -13,6 +13,8 @@ import { fetchJsonWithMeta, fetchTextWithFallback, getProviderConfig } from './u
 
 const MAX_LOOKUP_PAGES = 6;
 const MAX_SEARCH_HINTS = 2;
+const MAX_AJAX_EPISODE_PAGES = 40;
+const MAX_EMBED_RESOLVE_ATTEMPTS = 3;
 
 function hasExecutionContext(c) {
   try {
@@ -87,6 +89,31 @@ function parseEpisodeNumberFromUrl(value) {
   const input = toSafeString(value);
   const match = input.match(/episode[-\s]*(\d+)/i);
   return match?.[1] ? toNumber(match[1], 0) : 0;
+}
+
+function parseEpisodeNumber(value) {
+  const parsed = Math.max(0, toNumber(value, 0));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function buildWorkerProxyUrl(c, targetUrl, referer) {
+  const safeTarget = toSafeString(targetUrl);
+  if (!safeTarget) {
+    return '';
+  }
+
+  try {
+    const requestUrl = new URL(c.req.url);
+    const apiBasePath = requestUrl.pathname.startsWith('/v1/') ? '/v1' : '/api/v1';
+    const params = new URLSearchParams();
+    params.set('url', safeTarget);
+    if (toSafeString(referer)) {
+      params.set('referer', toSafeString(referer));
+    }
+    return `${apiBasePath}/proxy?${params.toString()}`;
+  } catch {
+    return safeTarget;
+  }
 }
 
 function dedupeBy(values, keyBuilder) {
@@ -362,12 +389,46 @@ function pickEpisode(episodes, requestedEpisode) {
   return episodes[episodes.length - 1];
 }
 
-function decodeEmbedEntry(rawValue) {
+function extractUrlFromEmbedPayload(payload, watchUrl) {
+  const input = toSafeString(payload);
+  if (!input) return '';
+
+  if (/^https?:\/\//i.test(input)) {
+    return toAbsoluteUrl(input, watchUrl);
+  }
+
+  const candidates = [input, decodeHtmlEntities(input)].filter(Boolean);
+  for (const value of candidates) {
+    const iframeMatch = value.match(/<iframe[^>]+src=['"]([^'"]+)['"]/i);
+    if (iframeMatch?.[1]) {
+      return toAbsoluteUrl(iframeMatch[1], watchUrl);
+    }
+
+    const srcMatch = value.match(/src=['"]([^'"]+)['"]/i);
+    if (srcMatch?.[1]) {
+      return toAbsoluteUrl(srcMatch[1], watchUrl);
+    }
+
+    try {
+      const parsed = JSON.parse(value);
+      const direct = toSafeString(parsed?.url || parsed?.src || parsed?.file);
+      if (direct) {
+        return toAbsoluteUrl(direct, watchUrl);
+      }
+    } catch {
+      // best effort only
+    }
+  }
+
+  return '';
+}
+
+function decodeEmbedEntry(rawValue, watchUrl) {
   const raw = toSafeString(rawValue);
   if (!raw || !raw.includes(':')) return null;
   const [serverEncoded, urlEncoded] = raw.split(':');
   const server = toSafeString(decodeBase64(serverEncoded));
-  const url = toSafeString(decodeBase64(urlEncoded));
+  const url = extractUrlFromEmbedPayload(toSafeString(decodeBase64(urlEncoded)), watchUrl);
   if (!url) return null;
   return {
     server: server || 'desidub',
@@ -385,10 +446,16 @@ function parseRawUrlCandidates(html) {
     if (
       lower.includes('/wp-json/oembed') ||
       lower.includes('fonts.googleapis') ||
+      lower.includes('fonts.gstatic') ||
+      lower.includes('static.cloudflareinsights.com') ||
+      lower.includes('googletagmanager.com') ||
+      lower.includes('google-analytics.com') ||
       lower.includes('reddit.com') ||
       lower.includes('facebook.com') ||
       lower.includes('x.com/intent') ||
-      lower.includes('tumblr.com/widgets')
+      lower.includes('tumblr.com/widgets') ||
+      lower.includes('/wp-content/') ||
+      /\.(?:js|css|png|jpe?g|gif|svg|webp|woff2?|ttf|ico)(?:$|\?)/i.test(lower)
     ) {
       return false;
     }
@@ -405,10 +472,93 @@ function parseRawUrlCandidates(html) {
 
     return (
       direct ||
-      /(embed|player|stream|vidmoly|mirror|wish|abyss|rapid|short\.icu|cloud)/i.test(lower)
+      /(embed|player|stream|vidmoly|mirror|wish|abyss|rapid|short\.icu|vidcloud|megacloud)/i.test(lower)
     );
   });
   return dedupeBy(filtered, (item) => item);
+}
+
+function parseDirectMediaUrlsFromText(html, baseUrl) {
+  const body = toSafeString(html).replace(/\\\//g, '/');
+  if (!body) {
+    return [];
+  }
+
+  const matches = [...body.matchAll(/https?:\/\/[^'"\\\s<>]+(?:\.m3u8|\.mp4|\.mkv|\.webm|\.mpd)[^'"\\\s<>]*/gi)].map(
+    (match) => toAbsoluteUrl(match[0], baseUrl)
+  );
+  return dedupeBy(matches.filter(Boolean), (item) => item);
+}
+
+function canResolveEmbedToDirect(url) {
+  const lower = toSafeString(url).toLowerCase();
+  return lower.includes('vidmoly.') && lower.includes('/embed');
+}
+
+async function resolveEmbedToDirectUrls(embedUrl, referer, c) {
+  const html = await fetchTextWithFallback(embedUrl, c, referer);
+  return parseDirectMediaUrlsFromText(html, embedUrl);
+}
+
+function streamPriority(stream) {
+  const url = toSafeString(stream?.url).toLowerCase();
+  let score = 0;
+  if (isLikelyDirectMediaUrl(url)) {
+    score += 100;
+  }
+  if (url.includes('.m3u8')) {
+    score += 20;
+  }
+  // Some hosts return tokenized links bound to transient ASN/IP; keep them as fallback, not primary.
+  if (url.includes('asn=')) {
+    score -= 220;
+  }
+  // Fragment-based links lose context when proxied server-side.
+  if (url.includes('#')) {
+    score -= 40;
+  }
+  if (url.includes('/embed')) {
+    score -= 10;
+  }
+  return score;
+}
+
+async function buildPlayableStreams(streams, referer, c) {
+  const rows = Array.isArray(streams) ? streams : [];
+  const output = [];
+  let resolveAttempts = 0;
+
+  for (const row of rows) {
+    const rawUrl = toAbsoluteUrl(row?.url, referer);
+    if (!rawUrl) {
+      continue;
+    }
+    const streamReferer = toSafeString(row?.referer || referer);
+
+    if (
+      !isLikelyDirectMediaUrl(rawUrl) &&
+      resolveAttempts < MAX_EMBED_RESOLVE_ATTEMPTS &&
+      canResolveEmbedToDirect(rawUrl)
+    ) {
+      resolveAttempts += 1;
+      const directUrls = await resolveEmbedToDirectUrls(rawUrl, referer, c).catch(() => []);
+      directUrls.forEach((directUrl) => {
+        output.push({
+          server: row.server,
+          url: directUrl,
+          referer: rawUrl,
+        });
+      });
+    }
+
+    output.push({
+      server: row.server,
+      url: rawUrl,
+      referer: streamReferer,
+    });
+  }
+
+  return dedupeBy(output, (stream) => stream.url).sort((left, right) => streamPriority(right) - streamPriority(left));
 }
 
 function parseStreamsFromWatchHtml(html, watchUrl) {
@@ -416,7 +566,7 @@ function parseStreamsFromWatchHtml(html, watchUrl) {
   const streams = [];
 
   $('[data-embed-id]').each((_, el) => {
-    const parsed = decodeEmbedEntry($(el).attr('data-embed-id'));
+    const parsed = decodeEmbedEntry($(el).attr('data-embed-id'), watchUrl);
     if (!parsed?.url) return;
     streams.push({
       server: parsed.server,
@@ -504,6 +654,95 @@ function stripHtml(value) {
     .trim();
 }
 
+function normalizeEpisodesFromAjaxPayload(payload, siteBaseUrl) {
+  const rows = Array.isArray(payload?.data?.episodes) ? payload.data.episodes : [];
+  return rows
+    .map((row) => {
+      const watchUrl = toAbsoluteUrl(row?.url, siteBaseUrl);
+      if (!watchUrl || !watchUrl.includes('/watch/')) {
+        return null;
+      }
+
+      const number =
+        parseEpisodeNumber(row?.meta_number) ||
+        parseEpisodeNumber(row?.tmdb_fetch_episode) ||
+        parseEpisodeNumber(row?.number) ||
+        parseEpisodeNumberFromUrl(watchUrl);
+      const title = decodeHtmlEntities(
+        toSafeString(row?.title || row?.post_title || row?.number || `Episode ${number || '?'}`)
+      );
+
+      return {
+        number,
+        title: title || (number > 0 ? `Episode ${number}` : 'Episode'),
+        url: watchUrl,
+        slug: parseInputSlug(watchUrl),
+      };
+    })
+    .filter(Boolean);
+}
+
+async function fetchAnimeEpisodesViaAjax(postId, c) {
+  const safePostId = toNumber(postId, 0);
+  if (safePostId <= 0) {
+    return [];
+  }
+
+  const config = getProviderConfig(c);
+  const allEpisodes = [];
+  let page = 1;
+  let totalPageHint = 0;
+
+  while (page <= MAX_AJAX_EPISODE_PAGES) {
+    const query = new URLSearchParams({
+      action: 'get_episodes',
+      anime_id: String(safePostId),
+      page: String(page),
+      order: 'desc',
+    });
+    const endpoint = `${config.desiDubSiteBaseUrl}/wp-admin/admin-ajax.php?${query.toString()}`;
+    const { payload } = await fetchJsonWithMeta(endpoint, c, config.desiDubSiteBaseUrl);
+
+    if (!payload || typeof payload !== 'object' || payload?.success === false) {
+      break;
+    }
+
+    const pageEpisodes = normalizeEpisodesFromAjaxPayload(payload, config.desiDubSiteBaseUrl);
+    if (pageEpisodes.length < 1) {
+      break;
+    }
+    allEpisodes.push(...pageEpisodes);
+
+    if (totalPageHint <= 0) {
+      totalPageHint = Math.max(0, toNumber(payload?.data?.max_episodes_page, 0));
+    }
+
+    if (totalPageHint > 0 && page >= totalPageHint) {
+      break;
+    }
+
+    page += 1;
+  }
+
+  return dedupeBy(allEpisodes, (episode) => episode.url).sort((left, right) => {
+    const leftNum = parseEpisodeNumber(left.number);
+    const rightNum = parseEpisodeNumber(right.number);
+    if (leftNum !== rightNum) return leftNum - rightNum;
+    return toSafeString(left.url).localeCompare(toSafeString(right.url));
+  });
+}
+
+async function loadEpisodesForAnime(source, c) {
+  const ajaxEpisodes = await fetchAnimeEpisodesViaAjax(source?.postId, c).catch(() => []);
+  if (ajaxEpisodes.length > 0) {
+    return ajaxEpisodes;
+  }
+
+  const config = getProviderConfig(c);
+  const animeHtml = await fetchTextWithFallback(source.url, c, config.desiDubSiteBaseUrl);
+  return parseAnimeEpisodesFromHtml(animeHtml, source.url);
+}
+
 export async function getHindiDubbedAnimeDetailsData(id, c) {
   const inputId = toSafeString(id);
   if (!inputId) {
@@ -516,10 +755,7 @@ export async function getHindiDubbedAnimeDetailsData(id, c) {
     throw new NotFoundError('anime detail page not found');
   }
 
-  const config = getProviderConfig(c);
-  const animeHtml = await fetchTextWithFallback(source.url, c, config.desiDubSiteBaseUrl);
-
-  const episodes = parseAnimeEpisodesFromHtml(animeHtml, source.url);
+  const episodes = await loadEpisodesForAnime(source, c);
   const workerRuntime = isLikelyWorkerRuntime(c);
   const cachedCatalog = getCachedCatalog(c);
   const mappingCatalog =
@@ -577,13 +813,12 @@ export async function getHindiDubbedStreamData(id, episode, server, c) {
   }
 
   const config = getProviderConfig(c);
-  const animeHtml = await fetchTextWithFallback(source.url, c, config.desiDubSiteBaseUrl);
-
-  const episodes = parseAnimeEpisodesFromHtml(animeHtml, source.url);
+  const episodes = await loadEpisodesForAnime(source, c);
   const selectedEpisode = pickEpisode(episodes, episode);
   const watchHtml = await fetchTextWithFallback(selectedEpisode.url, c, config.desiDubSiteBaseUrl);
   const parsedStreams = parseStreamsFromWatchHtml(watchHtml, selectedEpisode.url);
-  const filteredStreams = filterStreamsByServer(parsedStreams, server);
+  const playableStreams = await buildPlayableStreams(parsedStreams, selectedEpisode.url, c);
+  const filteredStreams = filterStreamsByServer(playableStreams, server);
 
   if (filteredStreams.length < 1) {
     throw new NotFoundError('stream links not found for requested episode/server');
@@ -617,14 +852,17 @@ export async function getHindiDubbedStreamData(id, episode, server, c) {
       id: episodeId,
       type: 'dub',
       link: {
-        file: stream.url,
-        type: mediaTypeForUrl(stream.url),
+        file: (() => {
+          const safeReferer = toSafeString(stream.referer || `${config.desiDubSiteBaseUrl}/`);
+          return buildWorkerProxyUrl(c, stream.url, safeReferer);
+        })(),
+        type: isLikelyDirectMediaUrl(stream.url) ? mediaTypeForUrl(stream.url) : 'text/html',
       },
       tracks: [],
       intro: { start: 0, end: 0 },
       outro: { start: 0, end: 0 },
       server: normalizeServerName(stream.server),
-      referer: `${config.desiDubSiteBaseUrl}/`,
+      referer: toSafeString(stream.referer || `${config.desiDubSiteBaseUrl}/`),
       isDirect: isLikelyDirectMediaUrl(stream.url),
     })),
   };

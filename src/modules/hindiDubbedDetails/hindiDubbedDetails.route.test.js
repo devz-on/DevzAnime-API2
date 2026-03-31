@@ -58,6 +58,33 @@ function buildFetchStub() {
       });
     }
 
+    if (url.includes('/wp-admin/admin-ajax.php') && url.includes('action=get_episodes') && url.includes('anime_id=5001')) {
+      return jsonResponse({
+        success: true,
+        data: {
+          episodes: [
+            {
+              id: 7001,
+              number: 'Episode 1',
+              meta_number: '1',
+              title: 'To You, in 2000 Years',
+              post_title: 'Attack on Titan Episode 1',
+              url: 'https://www.desidubanime.me/watch/attack-on-titan-season-1-episode-1/',
+            },
+            {
+              id: 7002,
+              number: 'Episode 2',
+              meta_number: '2',
+              title: 'That Day',
+              post_title: 'Attack on Titan Episode 2',
+              url: 'https://www.desidubanime.me/watch/attack-on-titan-season-1-episode-2/',
+            },
+          ],
+          max_episodes_page: 1,
+        },
+      });
+    }
+
     if (url === 'https://www.desidubanime.me/anime/attack-on-titan-season-1/') {
       return textResponse(`
         <a class="episode-list-display-box episode-list-item"

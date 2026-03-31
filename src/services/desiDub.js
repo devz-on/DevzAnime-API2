@@ -7,6 +7,8 @@ import { validationError } from '../utils/errors.js';
 
 const PAGE_SIZE = 20;
 const FALLBACK_HINDI_TAG_ID = 74;
+const WP_ANIME_FIELDS =
+  'id,slug,link,title,class_list,_embedded.wp:featuredmedia.source_url,_embedded.wp:featuredmedia.guid.rendered,_embedded.wp:featuredmedia.media_details.sizes.medium.source_url,_embedded.wp:term.taxonomy,_embedded.wp:term.name';
 const UNKNOWN_EPISODES = {
   sub: 0,
   dub: 1,
@@ -149,6 +151,7 @@ async function fetchHindiDubPage(page, c) {
     page: String(safePage),
     per_page: String(PAGE_SIZE),
     _embed: '1',
+    _fields: WP_ANIME_FIELDS,
   });
 
   const endpoint = `${config.desiDubWpApiBaseUrl}/anime?${query.toString()}`;
@@ -196,6 +199,7 @@ async function fetchHindiDubSearchPage(keyword, page, c) {
     per_page: String(PAGE_SIZE),
     _embed: '1',
     search: safeKeyword,
+    _fields: WP_ANIME_FIELDS,
   });
   const endpoint = `${config.desiDubWpApiBaseUrl}/anime?${query.toString()}`;
   const { payload, headers } = await fetchJsonWithMeta(endpoint, c, config.desiDubSiteBaseUrl);

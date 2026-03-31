@@ -31,6 +31,24 @@ function parseHindiEpisodeKey(value) {
   };
 }
 
+function parseSlugStyleEpisodeKey(value) {
+  const decoded = decodePathValue(value);
+  const match = decoded.match(/^desidub-(\d+)-[a-z0-9-]*?(?:-|_)(?:ep|episode)(?:-|_)?(\d+)$/i);
+  if (!match) {
+    return null;
+  }
+
+  const animePostId = toSafeString(match[1]);
+  if (!animePostId) {
+    return null;
+  }
+
+  return {
+    animeInput: animePostId,
+    episode: toEpisodeNumber(match[2]),
+  };
+}
+
 function parseLegacyEpisodeKey(value) {
   const decoded = decodePathValue(value);
   const match = decoded.match(/^(.*)::ep=(.*)$/);
@@ -54,6 +72,11 @@ function resolveHindiEpisodeTarget(value) {
   const fromHindiEpisodeId = parseHindiEpisodeKey(value);
   if (fromHindiEpisodeId) {
     return fromHindiEpisodeId;
+  }
+
+  const fromSlugStyleEpisodeId = parseSlugStyleEpisodeKey(value);
+  if (fromSlugStyleEpisodeId) {
+    return fromSlugStyleEpisodeId;
   }
 
   const fromLegacyEpisodeId = parseLegacyEpisodeKey(value);
@@ -147,6 +170,9 @@ export function isLikelyHindiEpisodeIdentifier(value) {
     return false;
   }
   if (/^desidub-ep-\d+-\d+$/.test(normalized)) {
+    return true;
+  }
+  if (/^desidub-\d+-[a-z0-9-]*?(?:-|_)(?:ep|episode)(?:-|_)?\d+$/.test(normalized)) {
     return true;
   }
   return normalized.includes('::ep=desidub-ep-');

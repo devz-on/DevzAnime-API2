@@ -8,6 +8,7 @@ import {
   warmCatalog,
 } from './catalog.js';
 import {
+  DEFAULT_PAGE_SIZE,
   formatDateYYYYMMDD,
   formatTimeHHMM,
   getAnimeSlug,
@@ -37,6 +38,52 @@ function now() {
 
 function toExplorePageResponse(animes, page) {
   return paginateExplore(animes, page, toExploreAnime);
+}
+
+function entryMatchesKeyword(entry, normalizedKeyword) {
+  return createSearchCandidates(entry).some((candidate) => candidate.includes(normalizedKeyword));
+}
+
+function getCatalogSearchPage(catalog, normalizedKeyword, page) {
+  const requestedPage = Math.max(1, toNumber(page, 1));
+  let totalMatches = 0;
+
+  for (const entry of catalog) {
+    if (entryMatchesKeyword(entry, normalizedKeyword)) {
+      totalMatches += 1;
+    }
+  }
+
+  const totalPages = Math.max(1, Math.ceil(totalMatches / DEFAULT_PAGE_SIZE));
+  const currentPage = Math.min(requestedPage, totalPages);
+  const start = (currentPage - 1) * DEFAULT_PAGE_SIZE;
+  const end = start + DEFAULT_PAGE_SIZE;
+  const response = [];
+  let seenMatches = 0;
+
+  for (const entry of catalog) {
+    if (!entryMatchesKeyword(entry, normalizedKeyword)) {
+      continue;
+    }
+
+    if (seenMatches >= start && seenMatches < end) {
+      response.push(toExploreAnime(entry));
+    }
+
+    seenMatches += 1;
+    if (seenMatches >= end) {
+      break;
+    }
+  }
+
+  return {
+    pageInfo: {
+      currentPage,
+      totalPages,
+      hasNextPage: currentPage < totalPages,
+    },
+    response,
+  };
 }
 
 function pickCollection(...candidates) {
@@ -260,10 +307,7 @@ export async function getTopTenData(c) {
 export async function getSearchData(keyword, page, c) {
   const catalog = await loadCatalog(c);
   const normalizedKeyword = normalizeText(keyword);
-  const filtered = catalog.filter((entry) =>
-    createSearchCandidates(entry).some((candidate) => candidate.includes(normalizedKeyword))
-  );
-  return toExplorePageResponse(filtered, page);
+  return getCatalogSearchPage(catalog, normalizedKeyword, page);
 }
 
 export async function getSuggestionData(keyword, c) {

@@ -341,15 +341,21 @@ export async function proxyHandler(c) {
     }
   })();
 
+  const inputRefererRaw = String(referer || '').trim();
   const normalizedInputReferer = (() => {
+    if (!inputRefererRaw) {
+      return null;
+    }
     try {
-      return `${new URL(referer).origin}/`;
+      return `${new URL(inputRefererRaw).origin}/`;
     } catch {
-      return referer;
+      return inputRefererRaw;
     }
   })();
 
   const fallbackAttempts = [
+    { referer: inputRefererRaw || null, includeOrigin: true },
+    { referer: inputRefererRaw || null, includeOrigin: false },
     { referer: normalizedInputReferer, includeOrigin: true },
     { referer: normalizedInputReferer, includeOrigin: false },
     { referer: targetOriginReferer, includeOrigin: true },

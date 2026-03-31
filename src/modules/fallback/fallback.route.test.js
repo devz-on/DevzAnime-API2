@@ -187,6 +187,33 @@ test('GET /api/v1/stream falls back to hindi stream for hindi episode ids', asyn
       });
     }
 
+    if (url.includes('/wp-admin/admin-ajax.php') && url.includes('action=get_episodes') && url.includes('anime_id=5001')) {
+      return jsonResponse({
+        success: true,
+        data: {
+          episodes: [
+            {
+              id: 7001,
+              number: 'Episode 1',
+              meta_number: '1',
+              title: 'Episode 1',
+              post_title: 'Attack on Titan Episode 1',
+              url: 'https://www.desidubanime.me/watch/attack-on-titan-season-1-episode-1/',
+            },
+            {
+              id: 7002,
+              number: 'Episode 2',
+              meta_number: '2',
+              title: 'Episode 2',
+              post_title: 'Attack on Titan Episode 2',
+              url: 'https://www.desidubanime.me/watch/attack-on-titan-season-1-episode-2/',
+            },
+          ],
+          max_episodes_page: 1,
+        },
+      });
+    }
+
     if (url === 'https://www.desidubanime.me/anime/attack-on-titan-season-1/') {
       return textResponse(`
         <a class="episode-list-display-box episode-list-item"
@@ -201,6 +228,12 @@ test('GET /api/v1/stream falls back to hindi stream for hindi episode ids', asyn
       return textResponse(`
         <span data-embed-id="Vk1vbHlkdWI=:aHR0cHM6Ly92aWRtb2x5Lm5ldC9lbWJlZC1hYmMxMjMuaHRtbA=="></span>
         <span data-embed-id="TWlycm9yZHVi:aHR0cHM6Ly9nZG1pcnJvcmJvdC5ubC9lbWJlZC90ZXN0LTEyMw=="></span>
+      `);
+    }
+
+    if (url === 'https://www.desidubanime.me/watch/attack-on-titan-season-1-episode-2/') {
+      return textResponse(`
+        <span data-embed-id="Vk1vbHlkdWI=:aHR0cHM6Ly92aWRtb2x5Lm5ldC9lbWJlZC1lcGlzb2RlLTIuaHRtbA=="></span>
       `);
     }
 
@@ -221,4 +254,13 @@ test('GET /api/v1/stream falls back to hindi stream for hindi episode ids', asyn
   assert.equal(Array.isArray(body.data), true);
   assert.equal(body.data.length, 2);
   assert.equal(body.data[0].type, 'dub');
+
+  const slugEpisodeResponse = await app.request(
+    'http://localhost/api/v1/stream?id=desidub-5001-attack-on-titan-season-1-episode-1&server=hd-1&type=sub'
+  );
+  assert.equal(slugEpisodeResponse.status, 200);
+  const slugEpisodeBody = await slugEpisodeResponse.json();
+  assert.equal(slugEpisodeBody.success, true);
+  assert.equal(slugEpisodeBody.data[0].id, 'desidub-ep-5001-1');
+  assert.equal(slugEpisodeBody.data.some((stream) => stream.link.file.includes('episode-2')), false);
 });

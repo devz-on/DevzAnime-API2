@@ -22,15 +22,31 @@ function now() {
   return Date.now();
 }
 
+function safeNormalizeText(value) {
+  try {
+    return normalizeText(value);
+  } catch {
+    return toSafeString(value)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+  }
+}
+
 function toNormalizedCatalogEntry(anime) {
   const title = getBestAnimeTitle(anime);
   const id = getAnimeSlug(anime);
+  const titleNorm = normalizeText(title);
+  const altNorm = normalizeText(getAlternativeTitle(anime));
+  const slugCandidates = Array.isArray(anime?.slugs) ? anime.slugs.map((slug) => safeNormalizeText(slug)) : [];
+  const searchCandidates = [...new Set([titleNorm, altNorm, ...slugCandidates].filter(Boolean))];
   return {
     ...anime,
     __id: id,
     __title: title,
-    __titleNorm: normalizeText(title),
-    __altNorm: normalizeText(getAlternativeTitle(anime)),
+    __titleNorm: titleNorm,
+    __altNorm: altNorm,
+    __searchCandidates: searchCandidates,
     __producerNorm: normalizeText(toSafeString(anime?.Producers)),
     __genresNorm: Array.isArray(anime?.genres) ? anime.genres.map((g) => normalizeText(g)) : [],
     __favorites: toNumber(anime?.Favorites),
@@ -112,11 +128,14 @@ export async function warmCatalog(c) {
 }
 
 export function createSearchCandidates(entry) {
+  if (Array.isArray(entry?.__searchCandidates) && entry.__searchCandidates.length > 0) {
+    return entry.__searchCandidates;
+  }
   const candidates = [entry.__titleNorm, entry.__altNorm];
   if (Array.isArray(entry?.slugs)) {
-    entry.slugs.forEach((slug) => candidates.push(normalizeText(slug)));
+    entry.slugs.forEach((slug) => candidates.push(safeNormalizeText(slug)));
   }
-  return candidates.filter(Boolean);
+  return [...new Set(candidates.filter(Boolean))];
 }
 
 export function pickAnimeByInput(catalog, rawId) {

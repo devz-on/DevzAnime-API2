@@ -58,6 +58,33 @@ function buildFetchStub() {
       });
     }
 
+    if (url.includes('/wp-admin/admin-ajax.php') && url.includes('action=get_episodes') && url.includes('anime_id=5001')) {
+      return jsonResponse({
+        success: true,
+        data: {
+          episodes: [
+            {
+              id: 7001,
+              number: 'Episode 1',
+              meta_number: '1',
+              title: 'To You, in 2000 Years',
+              post_title: 'Attack on Titan Episode 1',
+              url: 'https://www.desidubanime.me/watch/attack-on-titan-season-1-episode-1/',
+            },
+            {
+              id: 7002,
+              number: 'Episode 2',
+              meta_number: '2',
+              title: 'That Day',
+              post_title: 'Attack on Titan Episode 2',
+              url: 'https://www.desidubanime.me/watch/attack-on-titan-season-1-episode-2/',
+            },
+          ],
+          max_episodes_page: 1,
+        },
+      });
+    }
+
     if (url === 'https://www.desidubanime.me/anime/attack-on-titan-season-1/') {
       return textResponse(`
         <div class="episodes">
@@ -81,7 +108,9 @@ function buildFetchStub() {
           <iframe src="https://gdmirrorbot.nl/embed/test-123"></iframe>
         </div>
         <span data-embed-id="TWlycm9yZHVi:aHR0cHM6Ly9nZG1pcnJvcmJvdC5ubC9lbWJlZC90ZXN0LTEyMw=="></span>
+        <span data-embed-id="U3RyZWFtcDJwZHVi:PGlmcmFtZSBzcmM9J2h0dHBzOi8vZGVzaWR1YmFuaW1lLnBsYXllcnAycC5saXZlLyN0ZXN0MTIzJyB3aWR0aD0nMTAwJScgaGVpZ2h0PScxMDAlJyBmcmFtZWJvcmRlcj0nMCcgYWxsb3dmdWxsc2NyZWVuPjwvaWZyYW1lPg=="></span>
         <span data-embed-id="Vk1vbHlkdWI=:aHR0cHM6Ly92aWRtb2x5Lm5ldC9lbWJlZC1hYmMxMjMuaHRtbA=="></span>
+        <script src="https://static.cloudflareinsights.com/beacon.min.js/v8"></script>
       `);
     }
 
@@ -134,8 +163,9 @@ test('GET /api/v1/hindi-dubbed/stream returns streams for requested episode', as
   assert.equal(body.success, true);
   assert.equal(body.data.anime.streamId, 'desidub-5001-attack-on-titan-season-1');
   assert.equal(body.data.episode.number, 1);
-  assert.equal(body.data.streams.length, 2);
+  assert.equal(body.data.streams.length, 3);
   assert.equal(body.data.streams[0].type, 'dub');
+  assert.equal(body.data.streams.some((stream) => stream.link.file.includes('cloudflareinsights')), false);
 });
 
 test('GET /api/v1/hindi-dubbed/stream filters by server', async (t) => {
