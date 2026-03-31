@@ -8,7 +8,7 @@ import { validationError } from '../utils/errors.js';
 const PAGE_SIZE = 20;
 const FALLBACK_HINDI_TAG_ID = 74;
 const WP_ANIME_FIELDS =
-  'id,slug,link,title,class_list,_embedded.wp:featuredmedia.source_url,_embedded.wp:featuredmedia.guid.rendered,_embedded.wp:featuredmedia.media_details.sizes.medium.source_url,_embedded.wp:term.taxonomy,_embedded.wp:term.name';
+  'id,slug,link,title,class_list,jetpack_featured_media_url,yoast_head_json.og_image,yoast_head_json.twitter_image,_embedded.wp:featuredmedia.source_url,_embedded.wp:featuredmedia.guid.rendered,_embedded.wp:featuredmedia.media_details.sizes.medium.source_url,_embedded.wp:term.taxonomy,_embedded.wp:term.name';
 const UNKNOWN_EPISODES = {
   sub: 0,
   dub: 1,
@@ -63,9 +63,18 @@ function findTermName(row, taxonomy) {
 
 function extractPoster(row) {
   const media = row?._embedded?.['wp:featuredmedia'];
-  if (!Array.isArray(media) || !media[0]) return '';
-  const first = media[0];
-  return toSafeString(first?.source_url || first?.guid?.rendered || first?.media_details?.sizes?.medium?.source_url);
+  const first = Array.isArray(media) ? media[0] : null;
+  const fromYoast = Array.isArray(row?.yoast_head_json?.og_image)
+    ? row.yoast_head_json.og_image[0]?.url
+    : '';
+  return toSafeString(
+    first?.source_url ||
+      first?.guid?.rendered ||
+      first?.media_details?.sizes?.medium?.source_url ||
+      row?.jetpack_featured_media_url ||
+      fromYoast ||
+      row?.yoast_head_json?.twitter_image
+  );
 }
 
 function getDefaultType(row) {

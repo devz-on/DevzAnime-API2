@@ -494,6 +494,19 @@ function parseRawUrlCandidates(html) {
     const lower = toSafeString(value).toLowerCase();
     if (!lower) return false;
     if (
+      lower.includes('doubleclick.net') ||
+      lower.includes('googlesyndication.com') ||
+      lower.includes('googleadservices.com') ||
+      lower.includes('adsystem') ||
+      lower.includes('adservice') ||
+      lower.includes('adnxs.com') ||
+      lower.includes('magsrv.com') ||
+      lower.includes('popads.net') ||
+      lower.includes('propellerads') ||
+      lower.includes('adsterra') ||
+      lower.includes('adf.ly') ||
+      lower.includes('ouo.io') ||
+      lower.includes('linkvertise') ||
       lower.includes('/wp-json/oembed') ||
       lower.includes('fonts.googleapis') ||
       lower.includes('fonts.gstatic') ||
@@ -522,7 +535,9 @@ function parseRawUrlCandidates(html) {
 
     return (
       direct ||
-      /(embed|player|stream|vidmoly|mirror|wish|abyss|rapid|short\.icu|vidcloud|megacloud)/i.test(lower)
+      /(embed|player|vidmoly|mirror|wish|abyss|rapid|vidcloud|megacloud|gdmirrorbot|playerp2p|mewcdn)/i.test(
+        lower
+      )
     );
   });
   const deduped = dedupeBy(filtered, (item) => item);
@@ -565,7 +580,7 @@ function streamPriority(stream) {
   }
   // Some hosts return tokenized links bound to transient ASN/IP; keep them as fallback, not primary.
   if (url.includes('asn=')) {
-    score -= 220;
+    score -= 35;
   }
   // Fragment-based links lose context when proxied server-side.
   if (url.includes('#')) {
