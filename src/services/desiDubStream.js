@@ -592,12 +592,52 @@ function parseDirectMediaUrlsFromText(html, baseUrl) {
   return dedupeBy(matches.filter(Boolean), (item) => item);
 }
 
+function parseEmbedPathId(url) {
+  const input = toSafeString(url);
+  if (!input) return '';
+  try {
+    const parsed = new URL(input);
+    const match = parsed.pathname.match(/\/embed\/([a-z0-9_-]+)/i);
+    return match?.[1] ? toSafeString(match[1]) : '';
+  } catch {
+    return '';
+  }
+}
+
+function isGdMirrorEmbedUrl(url) {
+  const lower = toSafeString(url).toLowerCase();
+  if (!lower) return false;
+  return lower.includes('gdmirrorbot.') && lower.includes('/embed/');
+}
+
+function parseSourceUrlFromFilePageHtml(html, baseUrl) {
+  const body = toSafeString(html);
+  if (!body) return '';
+  const match = body.match(/name=['"]source_url['"][^>]*value=['"]([^'"]+)['"]/i);
+  if (!match?.[1]) return '';
+  const decoded = decodeHtmlEntities(match[1]);
+  return toAbsoluteUrl(decoded, baseUrl);
+}
+
 function canResolveEmbedToDirect(url) {
   const lower = toSafeString(url).toLowerCase();
-  return lower.includes('vidmoly.') && lower.includes('/embed');
+  return (lower.includes('vidmoly.') && lower.includes('/embed')) || isGdMirrorEmbedUrl(lower);
+}
+
+async function resolveGdMirrorEmbedToDirectUrls(embedUrl, referer, c) {
+  const embedId = parseEmbedPathId(embedUrl);
+  if (!embedId) return [];
+  const filePageUrl = `https://ddn.iqsmartgames.com/file/${embedId}`;
+  const html = await fetchTextWithFallback(filePageUrl, c, referer || embedUrl);
+  const directUrl = parseSourceUrlFromFilePageHtml(html, filePageUrl);
+  if (!directUrl) return [];
+  return [directUrl];
 }
 
 async function resolveEmbedToDirectUrls(embedUrl, referer, c) {
+  if (isGdMirrorEmbedUrl(embedUrl)) {
+    return resolveGdMirrorEmbedToDirectUrls(embedUrl, referer, c);
+  }
   const html = await fetchTextWithFallback(embedUrl, c, referer);
   return parseDirectMediaUrlsFromText(html, embedUrl);
 }

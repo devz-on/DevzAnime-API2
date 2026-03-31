@@ -176,6 +176,8 @@ export function mediaTypeForUrl(url) {
   if (lower.includes('.mpd')) return 'application/dash+xml';
   if (lower.includes('.mp4')) return 'video/mp4';
   if (lower.includes('.webm')) return 'video/webm';
+  if (lower.includes('.mkv')) return 'video/x-matroska';
+  if (lower.includes('.ts')) return 'video/mp2t';
   return 'application/octet-stream';
 }
 
