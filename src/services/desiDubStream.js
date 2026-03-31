@@ -578,9 +578,10 @@ function streamPriority(stream) {
   if (url.includes('.m3u8')) {
     score += 20;
   }
-  // Some hosts return tokenized links bound to transient ASN/IP; keep them as fallback, not primary.
+  // Some hosts return tokenized links bound to transient ASN/IP.
+  // Keep a small penalty so stable links are preferred, but still rank direct media ahead of embed pages.
   if (url.includes('asn=')) {
-    score -= 220;
+    score -= 30;
   }
   // Fragment-based links lose context when proxied server-side.
   if (url.includes('#')) {
@@ -590,6 +591,16 @@ function streamPriority(stream) {
     score -= 10;
   }
   return score;
+}
+
+function isAsnBoundUrl(url) {
+  const input = toSafeString(url);
+  if (!input) return false;
+  try {
+    return new URL(input).searchParams.has('asn');
+  } catch {
+    return /(?:^|[?&])asn=/.test(input.toLowerCase());
+  }
 }
 
 async function buildPlayableStreams(streams, referer, c) {
@@ -1035,6 +1046,10 @@ export async function getHindiDubbedStreamData(id, episode, server, c) {
       type: 'dub',
       link: {
         file: (() => {
+          // ASN-bound tokens are often tied to the viewer network; proxying from server IP causes 403.
+          if (isAsnBoundUrl(stream.url)) {
+            return stream.url;
+          }
           const safeReferer = toSafeString(stream.referer || `${config.desiDubSiteBaseUrl}/`);
           return buildWorkerProxyUrl(c, stream.url, safeReferer);
         })(),
