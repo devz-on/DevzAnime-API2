@@ -16,7 +16,6 @@ const MAX_SEARCH_HINTS = 2;
 const MAX_AJAX_EPISODE_PAGES = 40;
 const MAX_EMBED_RESOLVE_ATTEMPTS = 3;
 const MAX_RAW_URL_CANDIDATES = 40;
-const GDMIRROR_EMBEDHELPER_URL = 'https://pro.iqsmartgames.com/embedhelper.php';
 const EPISODE_CACHE_TTL_MS = 5 * 60 * 1000;
 const EPISODE_CACHE_MAX_ENTRIES = 200;
 const episodeCache = new Map();
@@ -119,39 +118,6 @@ function buildWorkerProxyUrl(c, targetUrl, referer) {
     return `${apiBasePath}/proxy?${params.toString()}`;
   } catch {
     return safeTarget;
-  }
-}
-
-function isM3u8ProxyStyleEndpoint(value) {
-  const input = toSafeString(value);
-  if (!input) return false;
-  try {
-    return new URL(input).pathname.replace(/\/+$/, '').toLowerCase().endsWith('/m3u8-proxy');
-  } catch {
-    return false;
-  }
-}
-
-function buildUpstreamProxyPlaybackUrl(proxyBaseUrl, targetUrl, referer) {
-  const proxyBase = toSafeString(proxyBaseUrl);
-  const safeTarget = toSafeString(targetUrl);
-  if (!proxyBase || !safeTarget) {
-    return '';
-  }
-
-  try {
-    const url = new URL(proxyBase);
-    url.searchParams.set('url', safeTarget);
-    if (toSafeString(referer)) {
-      const safeReferer = toSafeString(referer);
-      url.searchParams.set('referer', safeReferer);
-      if (isM3u8ProxyStyleEndpoint(proxyBase)) {
-        url.searchParams.set('headers', JSON.stringify({ referer: safeReferer }));
-      }
-    }
-    return url.toString();
-  } catch {
-    return '';
   }
 }
 
@@ -587,169 +553,18 @@ function parseDirectMediaUrlsFromText(html, baseUrl) {
     return [];
   }
 
-  const extensionMatches = [...body.matchAll(/https?:\/\/[^'"\\\s<>]+(?:\.m3u8|\.mp4|\.mkv|\.webm|\.mpd)[^'"\\\s<>]*/gi)]
-    .map((match) => toAbsoluteUrl(match[0], baseUrl))
-    .filter(Boolean);
-
-  const typedSourceMatches = [...body.matchAll(/<(?:source|video)\b[^>]*>/gi)]
-    .map((match) => toSafeString(match[0]))
-    .map((tag) => {
-      const src = toAbsoluteUrl((tag.match(/\bsrc=['"]([^'"]+)['"]/i)?.[1] || '').trim(), baseUrl);
-      const type = toSafeString(tag.match(/\btype=['"]([^'"]+)['"]/i)?.[1]).toLowerCase();
-      if (!src) return '';
-      if (
-        isLikelyDirectMediaUrl(src) ||
-        type.startsWith('video/') ||
-        type.includes('mpegurl') ||
-        type.includes('dash') ||
-        src.toLowerCase().includes('/play/video/')
-      ) {
-        return src;
-      }
-      return '';
-    })
-    .filter(Boolean);
-
-  return dedupeBy([...extensionMatches, ...typedSourceMatches], (item) => item);
-}
-
-function parseEmbedPathId(url) {
-  const input = toSafeString(url);
-  if (!input) return '';
-  try {
-    const parsed = new URL(input);
-    const match = parsed.pathname.match(/\/embed\/([a-z0-9_-]+)/i);
-    return match?.[1] ? toSafeString(match[1]) : '';
-  } catch {
-    return '';
-  }
-}
-
-function isGdMirrorEmbedUrl(url) {
-  const lower = toSafeString(url).toLowerCase();
-  if (!lower) return false;
-  return lower.includes('gdmirrorbot.') && lower.includes('/embed/');
-}
-
-function parseSourceUrlFromFilePageHtml(html, baseUrl) {
-  const body = toSafeString(html);
-  if (!body) return '';
-  const match = body.match(/name=['"]source_url['"][^>]*value=['"]([^'"]+)['"]/i);
-  if (!match?.[1]) return '';
-  const decoded = decodeHtmlEntities(match[1]);
-  return toAbsoluteUrl(decoded, baseUrl);
-}
-
-function parseJsonObject(value) {
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function parseGdMirrorProviderUrls(payload) {
-  const siteUrls = payload?.siteUrls && typeof payload.siteUrls === 'object' ? payload.siteUrls : null;
-  const mresultRaw = decodeBase64(payload?.mresult);
-  const mresult = parseJsonObject(mresultRaw);
-  if (!siteUrls || !mresult) {
-    return [];
-  }
-
-  const suffixBySite = {
-    plrx: '/',
-    stmrb: '.html',
-    strmtp: '/',
-  };
-
-  const output = [];
-  Object.entries(mresult).forEach(([siteKey, token]) => {
-    const base = toSafeString(siteUrls?.[siteKey]);
-    const value = toSafeString(token);
-    if (!base || !value) return;
-    const suffix = suffixBySite[siteKey] || '';
-    const built = toAbsoluteUrl(`${base}${value}${suffix}`, base);
-    if (built) {
-      output.push({
-        site: siteKey,
-        url: built,
-      });
-    }
-  });
-
-  return output;
-}
-
-async function fetchGdMirrorEmbedHelperPayload(embedId, embedUrl) {
-  const sid = toSafeString(embedId);
-  if (!sid) return null;
-  const body = new URLSearchParams({
-    sid,
-    UserFavSite: '',
-    currentDomain: JSON.stringify(['www.desidubanime.me', 'gdmirrorbot.nl']),
-  });
-
-  const response = await fetch(GDMIRROR_EMBEDHELPER_URL, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json, text/plain, */*',
-      'Content-Type': 'application/x-www-form-urlencoded',
-      Referer: toSafeString(embedUrl) || 'https://gdmirrorbot.nl/',
-      Origin: 'https://gdmirrorbot.nl',
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
-    },
-    body: body.toString(),
-  });
-
-  if (!response.ok) return null;
-  const payload = await response.json().catch(() => null);
-  return payload && typeof payload === 'object' ? payload : null;
+  const matches = [...body.matchAll(/https?:\/\/[^'"\\\s<>]+(?:\.m3u8|\.mp4|\.mkv|\.webm|\.mpd)[^'"\\\s<>]*/gi)].map(
+    (match) => toAbsoluteUrl(match[0], baseUrl)
+  );
+  return dedupeBy(matches.filter(Boolean), (item) => item);
 }
 
 function canResolveEmbedToDirect(url) {
   const lower = toSafeString(url).toLowerCase();
-  return (lower.includes('vidmoly.') && lower.includes('/embed')) || isGdMirrorEmbedUrl(lower);
-}
-
-async function resolveGdMirrorEmbedToDirectUrls(embedUrl, referer, c) {
-  const embedId = parseEmbedPathId(embedUrl);
-  if (!embedId) return [];
-  const output = [];
-
-  const helperPayload = await fetchGdMirrorEmbedHelperPayload(embedId, embedUrl).catch(() => null);
-  if (helperPayload) {
-    const providerUrls = parseGdMirrorProviderUrls(helperPayload);
-    const krakenEmbedUrl = providerUrls.find((item) => item.site === 'kknfl')?.url;
-    if (krakenEmbedUrl) {
-      const krakenHtml = await fetchTextWithFallback(krakenEmbedUrl, c, embedUrl).catch(() => '');
-      parseDirectMediaUrlsFromText(krakenHtml, krakenEmbedUrl).forEach((directUrl) => {
-        output.push({
-          url: directUrl,
-          referer: krakenEmbedUrl,
-        });
-      });
-    }
-  }
-
-  const filePageUrl = `https://ddn.iqsmartgames.com/file/${embedId}`;
-  const filePageHtml = await fetchTextWithFallback(filePageUrl, c, referer || embedUrl).catch(() => '');
-  const fileSourceUrl = parseSourceUrlFromFilePageHtml(filePageHtml, filePageUrl);
-  if (fileSourceUrl) {
-    output.push({
-      url: fileSourceUrl,
-      referer: filePageUrl,
-    });
-  }
-
-  return dedupeBy(output, (item) => item?.url);
+  return lower.includes('vidmoly.') && lower.includes('/embed');
 }
 
 async function resolveEmbedToDirectUrls(embedUrl, referer, c) {
-  if (isGdMirrorEmbedUrl(embedUrl)) {
-    return resolveGdMirrorEmbedToDirectUrls(embedUrl, referer, c);
-  }
   const html = await fetchTextWithFallback(embedUrl, c, referer);
   return parseDirectMediaUrlsFromText(html, embedUrl);
 }
@@ -760,23 +575,12 @@ function streamPriority(stream) {
   if (isLikelyDirectMediaUrl(url)) {
     score += 100;
   }
-  if (url.includes('.mp4')) {
-    score += 15;
-  }
-  if (url.includes('.mkv')) {
-    score -= 25;
-  }
   if (url.includes('.m3u8')) {
     score += 20;
   }
-  // Some hosts return tokenized links bound to transient ASN/IP.
-  // Keep ASN-bound streams as fallback; these frequently fail behind proxies due IP binding.
+  // Some hosts return tokenized links bound to transient ASN/IP; keep them as fallback, not primary.
   if (url.includes('asn=')) {
-    score -= 120;
-  }
-  // Kraken direct hosts are region/network dependent and can be refused from many clients.
-  if (url.includes('krakencloud.net/play/video/')) {
-    score -= 80;
+    score -= 220;
   }
   // Fragment-based links lose context when proxied server-side.
   if (url.includes('#')) {
@@ -786,20 +590,6 @@ function streamPriority(stream) {
     score -= 10;
   }
   return score;
-}
-
-function isAsnBoundUrl(url) {
-  const input = toSafeString(url);
-  if (!input) return false;
-  try {
-    return new URL(input).searchParams.has('asn');
-  } catch {
-    return /(?:^|[?&])asn=/.test(input.toLowerCase());
-  }
-}
-
-function isKrakenDirectVideoUrl(url) {
-  return toSafeString(url).toLowerCase().includes('krakencloud.net/play/video/');
 }
 
 async function buildPlayableStreams(streams, referer, c) {
@@ -829,20 +619,11 @@ async function buildPlayableStreams(streams, referer, c) {
     ) {
       resolveAttempts += 1;
       const directUrls = await resolveEmbedToDirectUrls(rawUrl, referer, c).catch(() => []);
-      directUrls.forEach((entry) => {
-        const directUrl =
-          typeof entry === 'string'
-            ? toAbsoluteUrl(entry, rawUrl)
-            : toAbsoluteUrl(entry?.url, rawUrl);
-        if (!directUrl) return;
-        const directReferer =
-          typeof entry === 'string'
-            ? rawUrl
-            : toSafeString(entry?.referer || rawUrl) || rawUrl;
+      directUrls.forEach((directUrl) => {
         output.push({
           server: row.server,
           url: directUrl,
-          referer: directReferer,
+          referer: rawUrl,
         });
       });
     }
@@ -1255,15 +1036,6 @@ export async function getHindiDubbedStreamData(id, episode, server, c) {
       link: {
         file: (() => {
           const safeReferer = toSafeString(stream.referer || `${config.desiDubSiteBaseUrl}/`);
-          // ASN-bound tokens are often tied to the viewer network; proxying from server IP causes 403.
-          if (isAsnBoundUrl(stream.url)) {
-            const upstreamProxyUrl = buildUpstreamProxyPlaybackUrl(config.m3u8ProxyUrl, stream.url, safeReferer);
-            return upstreamProxyUrl || stream.url;
-          }
-          // Kraken direct play URLs often fail when fetched server-side; allow browser direct playback.
-          if (isKrakenDirectVideoUrl(stream.url)) {
-            return stream.url;
-          }
           return buildWorkerProxyUrl(c, stream.url, safeReferer);
         })(),
         type: isLikelyDirectMediaUrl(stream.url) ? mediaTypeForUrl(stream.url) : 'text/html',
