@@ -580,7 +580,7 @@ function streamPriority(stream) {
   }
   // Some hosts return tokenized links bound to transient ASN/IP; keep them as fallback, not primary.
   if (url.includes('asn=')) {
-    score -= 35;
+    score -= 220;
   }
   // Fragment-based links lose context when proxied server-side.
   if (url.includes('#')) {
@@ -601,6 +601,14 @@ async function buildPlayableStreams(streams, referer, c) {
     const rawUrl = toAbsoluteUrl(row?.url, referer);
     if (!rawUrl) {
       continue;
+    }
+    try {
+      const host = new URL(rawUrl).hostname.toLowerCase();
+      if (host === 'short.icu' || host.endsWith('.short.icu') || host === 'ouo.io' || host.endsWith('.ouo.io')) {
+        continue;
+      }
+    } catch {
+      // best-effort only
     }
     const streamReferer = toSafeString(row?.referer || referer);
 
