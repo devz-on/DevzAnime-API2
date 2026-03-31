@@ -166,7 +166,8 @@ export function isLikelyDirectMediaUrl(url) {
     lower.includes('.mkv') ||
     lower.includes('.webm') ||
     lower.includes('.mpd') ||
-    lower.includes('.ts')
+    lower.includes('.ts') ||
+    lower.includes('/play/video/')
   );
 }
 
@@ -178,6 +179,7 @@ export function mediaTypeForUrl(url) {
   if (lower.includes('.webm')) return 'video/webm';
   if (lower.includes('.mkv')) return 'video/x-matroska';
   if (lower.includes('.ts')) return 'video/mp2t';
+  if (lower.includes('/play/video/')) return 'video/mp4';
   return 'application/octet-stream';
 }
 

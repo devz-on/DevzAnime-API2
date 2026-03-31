@@ -16,6 +16,7 @@ const MAX_SEARCH_HINTS = 2;
 const MAX_AJAX_EPISODE_PAGES = 40;
 const MAX_EMBED_RESOLVE_ATTEMPTS = 3;
 const MAX_RAW_URL_CANDIDATES = 40;
+const GDMIRROR_EMBEDHELPER_URL = 'https://pro.iqsmartgames.com/embedhelper.php';
 const EPISODE_CACHE_TTL_MS = 5 * 60 * 1000;
 const EPISODE_CACHE_MAX_ENTRIES = 200;
 const episodeCache = new Map();
@@ -586,10 +587,30 @@ function parseDirectMediaUrlsFromText(html, baseUrl) {
     return [];
   }
 
-  const matches = [...body.matchAll(/https?:\/\/[^'"\\\s<>]+(?:\.m3u8|\.mp4|\.mkv|\.webm|\.mpd)[^'"\\\s<>]*/gi)].map(
-    (match) => toAbsoluteUrl(match[0], baseUrl)
-  );
-  return dedupeBy(matches.filter(Boolean), (item) => item);
+  const extensionMatches = [...body.matchAll(/https?:\/\/[^'"\\\s<>]+(?:\.m3u8|\.mp4|\.mkv|\.webm|\.mpd)[^'"\\\s<>]*/gi)]
+    .map((match) => toAbsoluteUrl(match[0], baseUrl))
+    .filter(Boolean);
+
+  const typedSourceMatches = [...body.matchAll(/<(?:source|video)\b[^>]*>/gi)]
+    .map((match) => toSafeString(match[0]))
+    .map((tag) => {
+      const src = toAbsoluteUrl((tag.match(/\bsrc=['"]([^'"]+)['"]/i)?.[1] || '').trim(), baseUrl);
+      const type = toSafeString(tag.match(/\btype=['"]([^'"]+)['"]/i)?.[1]).toLowerCase();
+      if (!src) return '';
+      if (
+        isLikelyDirectMediaUrl(src) ||
+        type.startsWith('video/') ||
+        type.includes('mpegurl') ||
+        type.includes('dash') ||
+        src.toLowerCase().includes('/play/video/')
+      ) {
+        return src;
+      }
+      return '';
+    })
+    .filter(Boolean);
+
+  return dedupeBy([...extensionMatches, ...typedSourceMatches], (item) => item);
 }
 
 function parseEmbedPathId(url) {
@@ -619,6 +640,74 @@ function parseSourceUrlFromFilePageHtml(html, baseUrl) {
   return toAbsoluteUrl(decoded, baseUrl);
 }
 
+function parseJsonObject(value) {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseGdMirrorProviderUrls(payload) {
+  const siteUrls = payload?.siteUrls && typeof payload.siteUrls === 'object' ? payload.siteUrls : null;
+  const mresultRaw = decodeBase64(payload?.mresult);
+  const mresult = parseJsonObject(mresultRaw);
+  if (!siteUrls || !mresult) {
+    return [];
+  }
+
+  const suffixBySite = {
+    plrx: '/',
+    stmrb: '.html',
+    strmtp: '/',
+  };
+
+  const output = [];
+  Object.entries(mresult).forEach(([siteKey, token]) => {
+    const base = toSafeString(siteUrls?.[siteKey]);
+    const value = toSafeString(token);
+    if (!base || !value) return;
+    const suffix = suffixBySite[siteKey] || '';
+    const built = toAbsoluteUrl(`${base}${value}${suffix}`, base);
+    if (built) {
+      output.push({
+        site: siteKey,
+        url: built,
+      });
+    }
+  });
+
+  return output;
+}
+
+async function fetchGdMirrorEmbedHelperPayload(embedId, embedUrl) {
+  const sid = toSafeString(embedId);
+  if (!sid) return null;
+  const body = new URLSearchParams({
+    sid,
+    UserFavSite: '',
+    currentDomain: JSON.stringify(['www.desidubanime.me', 'gdmirrorbot.nl']),
+  });
+
+  const response = await fetch(GDMIRROR_EMBEDHELPER_URL, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json, text/plain, */*',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Referer: toSafeString(embedUrl) || 'https://gdmirrorbot.nl/',
+      Origin: 'https://gdmirrorbot.nl',
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
+    },
+    body: body.toString(),
+  });
+
+  if (!response.ok) return null;
+  const payload = await response.json().catch(() => null);
+  return payload && typeof payload === 'object' ? payload : null;
+}
+
 function canResolveEmbedToDirect(url) {
   const lower = toSafeString(url).toLowerCase();
   return (lower.includes('vidmoly.') && lower.includes('/embed')) || isGdMirrorEmbedUrl(lower);
@@ -627,11 +716,34 @@ function canResolveEmbedToDirect(url) {
 async function resolveGdMirrorEmbedToDirectUrls(embedUrl, referer, c) {
   const embedId = parseEmbedPathId(embedUrl);
   if (!embedId) return [];
+  const output = [];
+
+  const helperPayload = await fetchGdMirrorEmbedHelperPayload(embedId, embedUrl).catch(() => null);
+  if (helperPayload) {
+    const providerUrls = parseGdMirrorProviderUrls(helperPayload);
+    const krakenEmbedUrl = providerUrls.find((item) => item.site === 'kknfl')?.url;
+    if (krakenEmbedUrl) {
+      const krakenHtml = await fetchTextWithFallback(krakenEmbedUrl, c, embedUrl).catch(() => '');
+      parseDirectMediaUrlsFromText(krakenHtml, krakenEmbedUrl).forEach((directUrl) => {
+        output.push({
+          url: directUrl,
+          referer: krakenEmbedUrl,
+        });
+      });
+    }
+  }
+
   const filePageUrl = `https://ddn.iqsmartgames.com/file/${embedId}`;
-  const html = await fetchTextWithFallback(filePageUrl, c, referer || embedUrl);
-  const directUrl = parseSourceUrlFromFilePageHtml(html, filePageUrl);
-  if (!directUrl) return [];
-  return [directUrl];
+  const filePageHtml = await fetchTextWithFallback(filePageUrl, c, referer || embedUrl).catch(() => '');
+  const fileSourceUrl = parseSourceUrlFromFilePageHtml(filePageHtml, filePageUrl);
+  if (fileSourceUrl) {
+    output.push({
+      url: fileSourceUrl,
+      referer: filePageUrl,
+    });
+  }
+
+  return dedupeBy(output, (item) => item?.url);
 }
 
 async function resolveEmbedToDirectUrls(embedUrl, referer, c) {
@@ -648,13 +760,23 @@ function streamPriority(stream) {
   if (isLikelyDirectMediaUrl(url)) {
     score += 100;
   }
+  if (url.includes('.mp4')) {
+    score += 15;
+  }
+  if (url.includes('.mkv')) {
+    score -= 25;
+  }
   if (url.includes('.m3u8')) {
     score += 20;
   }
   // Some hosts return tokenized links bound to transient ASN/IP.
-  // Keep a small penalty so stable links are preferred, but still rank direct media ahead of embed pages.
+  // Keep ASN-bound streams as fallback; these frequently fail behind proxies due IP binding.
   if (url.includes('asn=')) {
-    score -= 30;
+    score -= 120;
+  }
+  // Kraken direct hosts are region/network dependent and can be refused from many clients.
+  if (url.includes('krakencloud.net/play/video/')) {
+    score -= 80;
   }
   // Fragment-based links lose context when proxied server-side.
   if (url.includes('#')) {
@@ -674,6 +796,10 @@ function isAsnBoundUrl(url) {
   } catch {
     return /(?:^|[?&])asn=/.test(input.toLowerCase());
   }
+}
+
+function isKrakenDirectVideoUrl(url) {
+  return toSafeString(url).toLowerCase().includes('krakencloud.net/play/video/');
 }
 
 async function buildPlayableStreams(streams, referer, c) {
@@ -703,11 +829,20 @@ async function buildPlayableStreams(streams, referer, c) {
     ) {
       resolveAttempts += 1;
       const directUrls = await resolveEmbedToDirectUrls(rawUrl, referer, c).catch(() => []);
-      directUrls.forEach((directUrl) => {
+      directUrls.forEach((entry) => {
+        const directUrl =
+          typeof entry === 'string'
+            ? toAbsoluteUrl(entry, rawUrl)
+            : toAbsoluteUrl(entry?.url, rawUrl);
+        if (!directUrl) return;
+        const directReferer =
+          typeof entry === 'string'
+            ? rawUrl
+            : toSafeString(entry?.referer || rawUrl) || rawUrl;
         output.push({
           server: row.server,
           url: directUrl,
-          referer: rawUrl,
+          referer: directReferer,
         });
       });
     }
@@ -1124,6 +1259,10 @@ export async function getHindiDubbedStreamData(id, episode, server, c) {
           if (isAsnBoundUrl(stream.url)) {
             const upstreamProxyUrl = buildUpstreamProxyPlaybackUrl(config.m3u8ProxyUrl, stream.url, safeReferer);
             return upstreamProxyUrl || stream.url;
+          }
+          // Kraken direct play URLs often fail when fetched server-side; allow browser direct playback.
+          if (isKrakenDirectVideoUrl(stream.url)) {
+            return stream.url;
           }
           return buildWorkerProxyUrl(c, stream.url, safeReferer);
         })(),
