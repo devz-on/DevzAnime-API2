@@ -853,6 +853,39 @@ function buildWatchEpisodeUrl(source, episodeNumber, siteBaseUrl) {
   return toAbsoluteUrl(target, safeBaseUrl);
 }
 
+function titleFromSlug(slug) {
+  return toSafeString(slug)
+    .split('-')
+    .filter(Boolean)
+    .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1))
+    .join(' ');
+}
+
+function buildSourceFromFallbackInputId(inputId, siteBaseUrl) {
+  const match = toSafeString(inputId).match(/^desidub-(\d+)-([a-z0-9-]+)$/i);
+  if (!match?.[1] || !match?.[2]) {
+    return null;
+  }
+
+  const postId = toNumber(match[1], 0);
+  const slug = toSafeString(match[2]).toLowerCase();
+  if (postId <= 0 || !slug) {
+    return null;
+  }
+
+  const safeBaseUrl = toSafeString(siteBaseUrl).replace(/\/+$/, '');
+  const animeUrl = toAbsoluteUrl(`${safeBaseUrl}/anime/${slug}/`, safeBaseUrl);
+  return {
+    postId,
+    slug,
+    title: titleFromSlug(slug) || slug,
+    url: animeUrl,
+    poster: '',
+    type: 'TV',
+    duration: 'N/A',
+  };
+}
+
 export async function getHindiDubbedAnimeDetailsData(id, c) {
   const inputId = toSafeString(id);
   if (!inputId) {
@@ -916,13 +949,16 @@ export async function getHindiDubbedStreamData(id, episode, server, c) {
     throw new validationError('id query parameter is required');
   }
 
-  const animePost = await resolveAnimePostByInput(inputId, c);
-  const source = normalizeDesiAnimeRow(animePost);
+  const config = getProviderConfig(c);
+  let source = buildSourceFromFallbackInputId(inputId, config.desiDubSiteBaseUrl);
+  if (!source) {
+    const animePost = await resolveAnimePostByInput(inputId, c);
+    source = normalizeDesiAnimeRow(animePost);
+  }
   if (!source?.url) {
     throw new NotFoundError('anime watch page not found');
   }
 
-  const config = getProviderConfig(c);
   const requestedEpisode = parseEpisodeNumber(episode);
   let episodes = [];
   let selectedEpisode = null;
