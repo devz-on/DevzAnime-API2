@@ -15,6 +15,11 @@ const MAX_LOOKUP_PAGES = 6;
 const MAX_SEARCH_HINTS = 2;
 const MAX_AJAX_EPISODE_PAGES = 40;
 const MAX_EMBED_RESOLVE_ATTEMPTS = 3;
+const MAX_RAW_URL_CANDIDATES = 40;
+const EPISODE_CACHE_TTL_MS = 5 * 60 * 1000;
+const EPISODE_CACHE_MAX_ENTRIES = 200;
+const episodeCache = new Map();
+const episodeCacheInFlight = new Map();
 
 function hasExecutionContext(c) {
   try {
@@ -126,6 +131,51 @@ function dedupeBy(values, keyBuilder) {
     output.push(value);
   }
   return output;
+}
+
+function buildEpisodeCacheKey(source) {
+  const postId = toNumber(source?.postId, 0);
+  if (postId > 0) {
+    return `post:${postId}`;
+  }
+  const slug = toSafeString(source?.slug || parseInputSlug(source?.url)).toLowerCase();
+  if (slug) {
+    return `slug:${slug}`;
+  }
+  return '';
+}
+
+function readCachedEpisodes(cacheKey) {
+  if (!cacheKey) return null;
+  const entry = episodeCache.get(cacheKey);
+  if (!entry || typeof entry !== 'object') {
+    return null;
+  }
+  const ageMs = Date.now() - toNumber(entry.updatedAt, 0);
+  if (ageMs > EPISODE_CACHE_TTL_MS) {
+    episodeCache.delete(cacheKey);
+    return null;
+  }
+  const episodes = Array.isArray(entry.episodes) ? entry.episodes : [];
+  if (episodes.length < 1) {
+    return null;
+  }
+  return episodes;
+}
+
+function writeCachedEpisodes(cacheKey, episodes) {
+  if (!cacheKey) return;
+  const rows = Array.isArray(episodes) ? episodes : [];
+  if (rows.length < 1) return;
+  episodeCache.set(cacheKey, {
+    updatedAt: Date.now(),
+    episodes: rows,
+  });
+  while (episodeCache.size > EPISODE_CACHE_MAX_ENTRIES) {
+    const oldestKey = episodeCache.keys().next().value;
+    if (!oldestKey) break;
+    episodeCache.delete(oldestKey);
+  }
 }
 
 async function fetchAnimePostById(postId, c) {
@@ -475,7 +525,11 @@ function parseRawUrlCandidates(html) {
       /(embed|player|stream|vidmoly|mirror|wish|abyss|rapid|short\.icu|vidcloud|megacloud)/i.test(lower)
     );
   });
-  return dedupeBy(filtered, (item) => item);
+  const deduped = dedupeBy(filtered, (item) => item);
+  if (deduped.length <= MAX_RAW_URL_CANDIDATES) {
+    return deduped;
+  }
+  return deduped.slice(0, MAX_RAW_URL_CANDIDATES);
 }
 
 function parseDirectMediaUrlsFromText(html, baseUrl) {
@@ -733,14 +787,41 @@ async function fetchAnimeEpisodesViaAjax(postId, c) {
 }
 
 async function loadEpisodesForAnime(source, c) {
-  const ajaxEpisodes = await fetchAnimeEpisodesViaAjax(source?.postId, c).catch(() => []);
-  if (ajaxEpisodes.length > 0) {
-    return ajaxEpisodes;
+  const cacheKey = buildEpisodeCacheKey(source);
+  const cached = readCachedEpisodes(cacheKey);
+  if (cached) {
+    return cached;
   }
 
-  const config = getProviderConfig(c);
-  const animeHtml = await fetchTextWithFallback(source.url, c, config.desiDubSiteBaseUrl);
-  return parseAnimeEpisodesFromHtml(animeHtml, source.url);
+  if (cacheKey && episodeCacheInFlight.has(cacheKey)) {
+    return episodeCacheInFlight.get(cacheKey);
+  }
+
+  const task = (async () => {
+    const ajaxEpisodes = await fetchAnimeEpisodesViaAjax(source?.postId, c).catch(() => []);
+    if (ajaxEpisodes.length > 0) {
+      writeCachedEpisodes(cacheKey, ajaxEpisodes);
+      return ajaxEpisodes;
+    }
+
+    const config = getProviderConfig(c);
+    const animeHtml = await fetchTextWithFallback(source.url, c, config.desiDubSiteBaseUrl);
+    const parsed = parseAnimeEpisodesFromHtml(animeHtml, source.url);
+    writeCachedEpisodes(cacheKey, parsed);
+    return parsed;
+  })();
+
+  if (cacheKey) {
+    episodeCacheInFlight.set(cacheKey, task);
+  }
+
+  try {
+    return await task;
+  } finally {
+    if (cacheKey && episodeCacheInFlight.get(cacheKey) === task) {
+      episodeCacheInFlight.delete(cacheKey);
+    }
+  }
 }
 
 export async function getHindiDubbedAnimeDetailsData(id, c) {
