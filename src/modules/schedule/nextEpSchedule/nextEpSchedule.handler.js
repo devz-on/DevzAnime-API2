@@ -1,4 +1,5 @@
-import { getNextScheduleData } from '../../../services/providerDetails.js';
+import nextEpScheduleExtract from './nextEpSchedule.extract.js';
+import { axiosInstance } from '../../../services/axiosInstance.js';
 import { validationError } from '../../../utils/errors.js';
 
 export default async function nextEpScheduleHandler(c) {
@@ -16,5 +17,11 @@ export default async function nextEpScheduleHandler(c) {
     throw new validationError('make sure id is correct');
   }
 
-  return getNextScheduleData(id, c);
+  const data = await axiosInstance('/watch/' + id);
+
+  if (!data.success) throw new validationError('make sure id is correct');
+
+  const response = nextEpScheduleExtract(data.data);
+
+  return response;
 }

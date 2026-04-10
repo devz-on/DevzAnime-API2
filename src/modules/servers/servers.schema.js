@@ -10,7 +10,7 @@ const schema = z.object({
         index: z.number(),
         type: z.enum(['sub', 'dub']),
         id: z.number(),
-        name: z.enum(['hd-1', 'hd-2', 'hd-3', 'megaplay', 'vidwish']),
+        name: z.string(),
       })
     ),
     dub: z.array(
@@ -18,7 +18,7 @@ const schema = z.object({
         index: z.number(),
         type: z.enum(['sub', 'dub']),
         id: z.number(),
-        name: z.enum(['hd-1', 'hd-2', 'hd-3', 'megaplay', 'vidwish']),
+        name: z.string(),
       })
     ),
   }),

@@ -27,7 +27,7 @@ const schema = z.object({
         start: z.number(),
         end: z.number(),
       }),
-      server: z.enum(someAnimes.servers),
+      server: z.string(),
       referer: z.string().default('https://megacloud.tv'),
     })
   ),
@@ -37,7 +37,7 @@ const streamSchema = createRoute({
   path: 'stream',
   request: {
     query: z.object({
-      server: z.enum(['hd-1', 'hd-2', 'hd-3', 'megaplay', 'vidwish']).default('hd-1'),
+      server: z.string().default('hd-1'),
       type: z.enum(['sub', 'dub']).default('sub'),
       id: z.string().openapi({ examples: someAnimes.episodesIds }),
     }),

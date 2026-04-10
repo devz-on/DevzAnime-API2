@@ -1,36 +1,26 @@
-import { getEpisodesData } from '../../services/providerDetails.js';
-import {
-  getHindiEpisodesFallback,
-  isEpisodesResponseEmpty,
-  isLikelyHindiAnimeIdentifier,
-  shouldFallbackToHindiOnError,
-} from '../../services/hindiFallback.js';
+import config from '../../config/config.js';
+import episodesExtract from './episodes.extract.js';
+import { NotFoundError } from '../../utils/errors.js';
 
 export default async function episodesHandler(c) {
   const { id } = c.req.valid('param');
 
-  if (isLikelyHindiAnimeIdentifier(id)) {
-    return getHindiEpisodesFallback(id, c);
-  }
-
-  let primaryResponse = null;
-  try {
-    primaryResponse = await getEpisodesData(id, c);
-  } catch (error) {
-    if (!shouldFallbackToHindiOnError(error)) {
-      throw error;
-    }
-    return getHindiEpisodesFallback(id, c);
-  }
-
-  if (!isEpisodesResponseEmpty(primaryResponse)) {
-    return primaryResponse;
-  }
+  const Referer = `/watch/${id}`;
+  const idNum = id.split('-').at(-1);
+  const ajaxUrl = `/ajax/v2/episode/list/${idNum}`;
 
   try {
-    const fallbackResponse = await getHindiEpisodesFallback(id, c);
-    return isEpisodesResponseEmpty(fallbackResponse) ? primaryResponse : fallbackResponse;
+    const res = await fetch(config.baseurl + ajaxUrl, {
+      headers: {
+        Referer: config.baseurl + Referer,
+        ...config.headers,
+      },
+    });
+
+    const data = await res.json();
+    const response = episodesExtract(data.html);
+    return response;
   } catch {
-    return primaryResponse;
+    throw new NotFoundError('episodes Not Found');
   }
 }

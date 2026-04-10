@@ -1,55 +1,32 @@
-import { getServersData } from '../../services/providerDetails.js';
-import {
-  getHindiServersFallback,
-  isLikelyHindiAnimeIdentifier,
-  isLikelyHindiEpisodeIdentifier,
-  isServersResponseEmpty,
-  shouldFallbackToHindiOnError,
-} from '../../services/hindiFallback.js';
+import config from '../../config/config.js';
+import serversExtract from './servers.extract.js';
+import { NotFoundError } from '../../utils/errors.js';
 
 export default async function (c) {
   const { id } = c.req.valid('param');
 
-  const shouldBypassPrimary =
-    isLikelyHindiEpisodeIdentifier(id) || isLikelyHindiAnimeIdentifier(id);
+  const response = await getServers(id);
 
-  let data = null;
-  if (shouldBypassPrimary) {
-    data = await getHindiServersFallback(id, c);
-  } else {
-    try {
-      data = await getServersData(id, c);
-    } catch (error) {
-      if (!shouldFallbackToHindiOnError(error)) {
-        throw error;
-      }
-      data = await getHindiServersFallback(id, c);
-    }
-
-    if (isServersResponseEmpty(data)) {
-      try {
-        const fallbackData = await getHindiServersFallback(id, c);
-        if (!isServersResponseEmpty(fallbackData)) {
-          data = fallbackData;
-        }
-      } catch {
-        // Keep primary no-data response.
-      }
-    }
-  }
-
-  return {
-    episode: data.episode,
-    sub: data.sub,
-    dub: data.dub,
-  };
+  return response;
 }
 
 export async function getServers(id) {
-  const data = await getServersData(id, null);
-  return {
-    episode: data.episode,
-    sub: data.sub,
-    dub: data.dub,
-  };
+  const episode = id.split('ep=').at(-1);
+  const ajaxUrl = `/ajax/v2/episode/servers?episodeId=${episode}`;
+  // "/ajax/v2/episode/servers?episodeId=${id}"
+  const Referer = `/watch/${id.replace('::', '?')}`;
+
+  try {
+    const res = await fetch(config.baseurl + ajaxUrl, {
+      headers: {
+        Referer: config.baseurl + Referer,
+        ...config.headers,
+      },
+    });
+    const data = await res.json();
+    const response = serversExtract(data.html);
+    return response;
+  } catch {
+    throw new NotFoundError('servers not found');
+  }
 }

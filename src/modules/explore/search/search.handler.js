@@ -1,42 +1,20 @@
-import { getSearchData } from '../../../services/providerContent.js';
-import {
-  getHindiSearchFallback,
-  isSearchResponseEmpty,
-  shouldFallbackToHindiOnError,
-} from '../../../services/hindiFallback.js';
-import { toSafeString } from '../../../services/normalizers.js';
+import exploreExtract from '../explore.extract.js';
+import { axiosInstance } from '../../../services/axiosInstance.js';
+import createEndpoint from '../../../utils/createEndpoint.js';
+import { NotFoundError, validationError } from '../../../utils/errors.js';
 
 export default async function searchHandler(c) {
   const { page, keyword } = c.req.valid('query');
-  const normalizedKeyword = toSafeString(keyword).toLowerCase();
 
-  if (normalizedKeyword.includes('hindi')) {
-    try {
-      return await getHindiSearchFallback(keyword, page, c);
-    } catch {
-      // fall through to primary provider search
-    }
+  const endpoint = createEndpoint(`search?keyword=${keyword}`, page);
+
+  const result = await axiosInstance(endpoint);
+
+  if (!result.success) {
+    throw new validationError('make sure given endpoint is correct');
   }
+  const response = exploreExtract(result.data);
 
-  let primaryResponse = null;
-
-  try {
-    primaryResponse = await getSearchData(keyword, page, c);
-  } catch (error) {
-    if (!shouldFallbackToHindiOnError(error)) {
-      throw error;
-    }
-    return getHindiSearchFallback(keyword, page, c);
-  }
-
-  if (!isSearchResponseEmpty(primaryResponse)) {
-    return primaryResponse;
-  }
-
-  try {
-    const fallbackResponse = await getHindiSearchFallback(keyword, page, c);
-    return isSearchResponseEmpty(fallbackResponse) ? primaryResponse : fallbackResponse;
-  } catch {
-    return primaryResponse;
-  }
+  if (response.response.length < 1) throw new NotFoundError();
+  return response;
 }

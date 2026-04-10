@@ -384,7 +384,11 @@ export async function getHindiDubbedData(page, mappedOnly, c, options = {}) {
     if (allowWarmup && workerCtxAvailable && !mappedOnlyFlag) {
       scheduleCatalogWarmup(c);
     } else {
-      catalog = await loadCatalog(c);
+      try {
+        catalog = await loadCatalog(c);
+      } catch {
+        catalog = null;
+      }
     }
   }
 
@@ -429,7 +433,11 @@ export async function getHindiDubbedSearchData(keyword, page, mappedOnly, c, opt
     if (allowWarmup && workerCtxAvailable && !mappedOnlyFlag) {
       scheduleCatalogWarmup(c);
     } else {
-      catalog = await loadCatalog(c);
+      try {
+        catalog = await loadCatalog(c);
+      } catch {
+        catalog = null;
+      }
     }
   }
 

@@ -1,40 +1,16 @@
-import { getStreamData } from '../../services/providerDetails.js';
-import {
-  getHindiStreamFallback,
-  isLikelyHindiAnimeIdentifier,
-  isLikelyHindiEpisodeIdentifier,
-  isStreamResponseEmpty,
-  shouldFallbackToHindiOnError,
-} from '../../services/hindiFallback.js';
+import { NotFoundError, validationError } from '../../utils/errors.js';
+import { getServers } from '../servers/servers.handler.js';
+import streamExtract from './stream.extract.js';
 
 export default async function streamHandler(c) {
   let { id, server, type } = c.req.valid('query');
 
-  const shouldBypassPrimary =
-    isLikelyHindiEpisodeIdentifier(id) || isLikelyHindiAnimeIdentifier(id);
+  const servers = await getServers(id);
 
-  if (shouldBypassPrimary) {
-    return getHindiStreamFallback(id, server, c);
-  }
+  const selectedServer = servers[type].find((el) => el.name === server);
+  if (!selectedServer) throw new validationError('invalid or server not found', { server });
 
-  let primaryResponse = null;
-  try {
-    primaryResponse = await getStreamData(id, server, type, c);
-  } catch (error) {
-    if (!shouldFallbackToHindiOnError(error)) {
-      throw error;
-    }
-    return getHindiStreamFallback(id, server, c);
-  }
-
-  if (!isStreamResponseEmpty(primaryResponse)) {
-    return primaryResponse;
-  }
-
-  try {
-    const fallbackResponse = await getHindiStreamFallback(id, server, c);
-    return isStreamResponseEmpty(fallbackResponse) ? primaryResponse : fallbackResponse;
-  } catch {
-    return primaryResponse;
-  }
+  const response = await streamExtract({ selectedServer, id });
+  if (!response) throw new NotFoundError('Something Went Wrong While Decryption');
+  return response;
 }
