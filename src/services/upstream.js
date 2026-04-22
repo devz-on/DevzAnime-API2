@@ -11,6 +11,38 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
+function normalizeBaseUrl(value) {
+  return toSafeString(value).replace(/\/+$/, '');
+}
+
+function normalizeReferer(value) {
+  const normalized = normalizeBaseUrl(value);
+  if (!normalized) {
+    return '';
+  }
+  return `${normalized}/`;
+}
+
+function parseCsvList(value) {
+  return toSafeString(value)
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function mergeUnique(values) {
+  const seen = new Set();
+  const output = [];
+  values.forEach((value) => {
+    const normalized = toSafeString(value);
+    if (!normalized) return;
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+    output.push(normalized);
+  });
+  return output;
+}
+
 export function getRuntimeEnv(c) {
   const processEnv = typeof process !== 'undefined' && process?.env ? process.env : {};
   const contextEnv = c?.env && typeof c.env === 'object' ? c.env : {};
@@ -37,17 +69,32 @@ export function getProviderConfig(c) {
   const desiDubWpApiBaseUrl = toSafeString(
     env.DESIDUB_WP_API_BASE_URL || `${desiDubSiteBaseUrl}/wp-json/wp/v2`
   ).replace(/\/+$/, '');
+  const defaultApiBaseUrls = ['https://hianime.dk/api', 'https://hianime.bar/api', 'https://9animes.cv/api'];
+  const defaultReferers = ['https://hianime.dk/', 'https://hianime.bar/', 'https://hianimes.se/'];
+
+  const configuredApiBaseUrl = normalizeBaseUrl(env.HIANIMES_API_BASE_URL || '');
+  const configuredApiBaseUrls = parseCsvList(env.HIANIMES_API_BASE_URLS).map((entry) => normalizeBaseUrl(entry));
+  const hianimesApiBaseUrls = mergeUnique([
+    ...configuredApiBaseUrls,
+    configuredApiBaseUrl,
+    ...defaultApiBaseUrls,
+  ]).filter(Boolean);
+
+  const configuredReferer = normalizeReferer(env.HIANIMES_REFERER || '');
+  const configuredReferers = parseCsvList(env.HIANIMES_REFERERS).map((entry) => normalizeReferer(entry));
+  const hianimesReferers = mergeUnique([...configuredReferers, configuredReferer, ...defaultReferers]).filter(
+    Boolean
+  );
 
   return {
-    hianimesApiBaseUrl: toSafeString(env.HIANIMES_API_BASE_URL || 'https://9animes.cv/api').replace(
-      /\/+$/,
-      ''
-    ),
+    hianimesApiBaseUrl: hianimesApiBaseUrls[0] || defaultApiBaseUrls[0],
+    hianimesApiBaseUrls,
     hianimesAjaxBaseUrl: toSafeString(env.HIANIMES_AJAX_BASE_URL || 'https://nine.mewcdn.online').replace(
       /\/+$/,
       ''
     ),
-    hianimesReferer: toSafeString(env.HIANIMES_REFERER || 'https://hianimes.se/'),
+    hianimesReferer: hianimesReferers[0] || defaultReferers[0],
+    hianimesReferers,
     m3u8ProxyUrl: toSafeString(env.UPSTREAM_PROXY_M3U8_URL || ''),
     daniProxyUrl: toSafeString(
       env.UPSTREAM_PROXY_DANI_URL || 'https://daniapi.bhoothihu.workers.dev/api/v1/proxy'
@@ -275,8 +322,91 @@ export async function fetchTextWithMeta(targetUrl, c, overrideReferer) {
 export async function fetchApi(path, c, params = {}) {
   const config = getProviderConfig(c);
   const cleanedPath = path.startsWith('/') ? path : `/${path}`;
-  const targetUrl = buildUrlWithParams(`${config.hianimesApiBaseUrl}${cleanedPath}`, params);
-  return fetchJsonWithFallback(targetUrl, c, config.hianimesReferer);
+  const baseUrls = Array.isArray(config.hianimesApiBaseUrls) && config.hianimesApiBaseUrls.length > 0
+    ? config.hianimesApiBaseUrls
+    : [config.hianimesApiBaseUrl];
+  const referers = Array.isArray(config.hianimesReferers) && config.hianimesReferers.length > 0
+    ? config.hianimesReferers
+    : [config.hianimesReferer];
+
+  const isHianimeDkBase = (baseUrl) => {
+    try {
+      return new URL(baseUrl).hostname.toLowerCase().includes('hianime.dk');
+    } catch {
+      return false;
+    }
+  };
+
+  const mapPathForBase = (inputPath, baseUrl) => {
+    if (!isHianimeDkBase(baseUrl)) {
+      return inputPath;
+    }
+
+    if (inputPath === '/anime/trending') return '/trending';
+    if (inputPath === '/anime/popular') return '/most-popular';
+    if (inputPath === '/latest/anime') return '/recently-added';
+    if (inputPath === '/latest/episode') return '/recently-updated';
+    if (inputPath === '/anime') return '/most-popular';
+
+    if (inputPath.startsWith('/anime/')) {
+      const suffix = toSafeString(inputPath.slice('/anime/'.length));
+      return suffix ? `/watch/${suffix}` : '/watch';
+    }
+
+    return inputPath;
+  };
+
+  const mapParamsForBase = (inputParams, mappedPath, baseUrl) => {
+    const isDk = isHianimeDkBase(baseUrl);
+    if (!isDk) {
+      return inputParams;
+    }
+
+    const safeParams = { ...(inputParams || {}) };
+    delete safeParams.cursor;
+    delete safeParams.slugNth;
+    delete safeParams.includeSlugs;
+    delete safeParams.start;
+    delete safeParams.end;
+
+    if (
+      mappedPath === '/trending' ||
+      mappedPath === '/most-popular' ||
+      mappedPath === '/top-airing' ||
+      mappedPath === '/recently-added' ||
+      mappedPath === '/recently-updated' ||
+      mappedPath === '/most-favorite'
+    ) {
+      const page = toNumber(safeParams.page, 1);
+      safeParams.page = Math.max(1, page);
+      const limit = toNumber(safeParams.limit, 0);
+      if (limit > 0) {
+        safeParams.limit = limit;
+      }
+    }
+
+    return safeParams;
+  };
+
+  let lastError = null;
+  for (let index = 0; index < baseUrls.length; index += 1) {
+    const baseUrl = normalizeBaseUrl(baseUrls[index]);
+    if (!baseUrl) {
+      continue;
+    }
+    const referer = toSafeString(referers[index] || referers[0] || config.hianimesReferer);
+    const mappedPath = mapPathForBase(cleanedPath, baseUrl);
+    const mappedParams = mapParamsForBase(params, mappedPath, baseUrl);
+    const targetUrl = buildUrlWithParams(`${baseUrl}${mappedPath}`, mappedParams);
+
+    try {
+      return await fetchJsonWithFallback(targetUrl, c, referer || config.hianimesReferer);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new validationError('failed to fetch upstream api');
 }
 
 export async function fetchJikan(path, c, params = {}) {

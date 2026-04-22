@@ -9,7 +9,7 @@ export default async function animeInfo(c) {
   const { id } = c.req.valid('param');
 
   if (isLikelyHindiAnimeIdentifier(id)) {
-    return getHindiAnimeInfoFallback(id, c);
+    return await getHindiAnimeInfoFallback(id, c);
   }
 
   try {
@@ -20,7 +20,11 @@ export default async function animeInfo(c) {
     return response;
   } catch (error) {
     if (shouldFallbackToHindiOnError(error)) {
-      return getHindiAnimeInfoFallback(id, c);
+      try {
+        return await getHindiAnimeInfoFallback(id, c);
+      } catch {
+        // Preserve original upstream error when fallback is unavailable.
+      }
     }
     throw error;
   }

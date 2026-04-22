@@ -20,8 +20,14 @@ export default async function serversHandler(c) {
 
 export async function getServers(id, c) {
   if (isLikelyHindiEpisodeIdentifier(id)) {
-    return getHindiServersFallback(id, c);
+    return await getHindiServersFallback(id, c);
   }
+
+  const emptyResponse = {
+    episode: 0,
+    sub: [],
+    dub: [],
+  };
 
   try {
     const response = toPublicServersPayload(await getProviderServersData(id, c));
@@ -29,10 +35,28 @@ export async function getServers(id, c) {
       return response;
     }
 
-    return getHindiServersFallback(id, c);
+    try {
+      const fallbackResponse = await getHindiServersFallback(id, c);
+      if (!isServersResponseEmpty(fallbackResponse)) {
+        return fallbackResponse;
+      }
+    } catch {
+      // Keep provider result when Hindi fallback lookup fails.
+    }
+
+    return response || emptyResponse;
   } catch (error) {
     if (shouldFallbackToHindiOnError(error)) {
-      return getHindiServersFallback(id, c);
+      try {
+        const fallbackResponse = await getHindiServersFallback(id, c);
+        if (!isServersResponseEmpty(fallbackResponse)) {
+          return fallbackResponse;
+        }
+      } catch {
+        // Keep stable empty payload on fallback errors for non-Hindi ids.
+      }
+
+      return emptyResponse;
     }
     throw error;
   }

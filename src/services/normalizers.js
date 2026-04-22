@@ -75,10 +75,19 @@ export function getBestAnimeTitle(anime) {
 }
 
 export function getAlternativeTitle(anime) {
-  return toSafeString(anime?.alternateTitle) || toSafeString(anime?.Japanese) || getBestAnimeTitle(anime);
+  return (
+    toSafeString(anime?.alternateTitle) ||
+    toSafeString(anime?.other_title) ||
+    toSafeString(anime?.Japanese) ||
+    getBestAnimeTitle(anime)
+  );
 }
 
 export function getAnimeSlug(anime) {
+  const explicitSlug = toSafeString(anime?.slug);
+  if (explicitSlug) {
+    return explicitSlug;
+  }
   if (Array.isArray(anime?.slugs) && anime.slugs.length > 0) {
     return toSafeString(anime.slugs[0]);
   }
@@ -88,9 +97,9 @@ export function getAnimeSlug(anime) {
 }
 
 export function toEpisodeCount(anime) {
-  const sub = toNumber(anime?.totalSub ?? anime?.totalSubbed, 0);
-  const dub = toNumber(anime?.totalDub ?? anime?.totalDubbed, 0);
-  const eps = toNumber(anime?.totalEpisodes, 0) || Math.max(sub, dub);
+  const sub = toNumber(anime?.totalSub ?? anime?.totalSubbed ?? anime?.sub, 0);
+  const dub = toNumber(anime?.totalDub ?? anime?.totalDubbed ?? anime?.dub, 0);
+  const eps = toNumber(anime?.totalEpisodes ?? anime?.episodes, 0) || Math.max(sub, dub);
   return { sub, dub, eps };
 }
 
@@ -100,7 +109,7 @@ export function toBasicAnime(anime) {
     title: getBestAnimeTitle(anime),
     alternativeTitle: getAlternativeTitle(anime),
     id: slug,
-    poster: toSafeString(anime?.image),
+    poster: toSafeString(anime?.image || anime?.poster || anime?.sposter || anime?.bposter),
     episodes: toEpisodeCount(anime),
   };
 }

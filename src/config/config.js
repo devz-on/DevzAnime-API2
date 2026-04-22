@@ -1,7 +1,7 @@
 const runtimeEnv = typeof process !== 'undefined' && process?.env ? process.env : {};
 
 function normalizeBaseUrl(raw) {
-  const fallback = 'https://aniwatchtv.to';
+  const fallback = 'https://hianime.dk';
   const value = String(raw || '').trim();
   if (!value) {
     return fallback;

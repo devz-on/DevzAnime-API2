@@ -93,11 +93,17 @@ function pickCollection(...candidates) {
       return candidate;
     }
     if (candidate && typeof candidate === 'object') {
+      if (Array.isArray(candidate.mangas)) {
+        return candidate.mangas;
+      }
       if (Array.isArray(candidate.animes)) {
         return candidate.animes;
       }
       if (Array.isArray(candidate.episodes)) {
         return candidate.episodes;
+      }
+      if (candidate.slider && Array.isArray(candidate.slider.sliderMangas)) {
+        return candidate.slider.sliderMangas;
       }
     }
   }
@@ -201,7 +207,11 @@ async function getLatestEpisodes(c) {
     return sharedCache.latestEpisodes;
   }
   const payload = await fetchApi('/latest/episode', c, { page: 1, limit: 1000 });
-  const episodes = Array.isArray(payload?.episodes) ? payload.episodes : [];
+  const episodes = Array.isArray(payload?.episodes)
+    ? payload.episodes
+    : Array.isArray(payload?.mangas)
+      ? payload.mangas
+      : [];
   sharedCache.latestEpisodes = episodes;
   sharedCache.latestEpisodesAt = now();
   return episodes;
@@ -235,6 +245,8 @@ export async function getHomeData(c) {
       let featured = pickCollection(
         homePayload?.featured,
         homePayload?.spotlight,
+        homePayload?.slider?.sliderMangas,
+        homePayload?.slider,
         homePayload?.trending,
         trendingPayload?.animes,
         popularPayload?.animes,
@@ -426,7 +438,11 @@ export async function getExploreData(query, page, c) {
   if (normalized === 'top-airing') {
     try {
       const payload = await fetchApi('/anime/trending', c, { page: pageNum, limit: 100 });
-      const list = payload?.animes || [];
+      const list = Array.isArray(payload?.animes)
+        ? payload.animes
+        : Array.isArray(payload?.mangas)
+          ? payload.mangas
+          : [];
       if (list.length > 0) {
         return toExplorePageResponse(list, 1);
       }
@@ -439,14 +455,21 @@ export async function getExploreData(query, page, c) {
   if (normalized === 'most-popular') {
     try {
       const payload = await fetchApi('/anime/popular', c, { page: pageNum, limit: 20 });
-      if (Array.isArray(payload?.animes) && payload.animes.length > 0) {
+      const rows = Array.isArray(payload?.animes)
+        ? payload.animes
+        : Array.isArray(payload?.mangas)
+          ? payload.mangas
+          : [];
+      if (rows.length > 0) {
         return {
           pageInfo: {
-            currentPage: toNumber(payload?.meta?.page, pageNum),
-            totalPages: Math.max(1, toNumber(payload?.meta?.totalPages, 1)),
-            hasNextPage: toNumber(payload?.meta?.page, pageNum) < toNumber(payload?.meta?.totalPages, 1),
+            currentPage: toNumber(payload?.meta?.page ?? payload?.page, pageNum),
+            totalPages: Math.max(1, toNumber(payload?.meta?.totalPages ?? payload?.totalPages, 1)),
+            hasNextPage:
+              toNumber(payload?.meta?.page ?? payload?.page, pageNum) <
+              toNumber(payload?.meta?.totalPages ?? payload?.totalPages, 1),
           },
-          response: payload.animes.map((anime) => toExploreAnime(anime)),
+          response: rows.map((anime) => toExploreAnime(anime)),
         };
       }
     } catch {
@@ -458,16 +481,21 @@ export async function getExploreData(query, page, c) {
   if (normalized === 'recently-added') {
     try {
       const payload = await fetchApi('/latest/anime', c, { page: pageNum, limit: 20 });
-      if (Array.isArray(payload?.animes) && payload.animes.length > 0) {
-        const totalPages = Math.max(1, toNumber(payload?.totalPages, 1));
-        const currentPage = Math.max(1, toNumber(payload?.page, pageNum));
+      const rows = Array.isArray(payload?.animes)
+        ? payload.animes
+        : Array.isArray(payload?.mangas)
+          ? payload.mangas
+          : [];
+      if (rows.length > 0) {
+        const totalPages = Math.max(1, toNumber(payload?.totalPages ?? payload?.meta?.totalPages, 1));
+        const currentPage = Math.max(1, toNumber(payload?.page ?? payload?.meta?.page, pageNum));
         return {
           pageInfo: {
             currentPage,
             totalPages,
             hasNextPage: currentPage < totalPages,
           },
-          response: payload.animes.map((anime) => toExploreAnime(anime)),
+          response: rows.map((anime) => toExploreAnime(anime)),
         };
       }
     } catch {
@@ -479,6 +507,20 @@ export async function getExploreData(query, page, c) {
   if (normalized === 'recently-updated') {
     try {
       const payload = await fetchApi('/latest/episode', c, { page: pageNum, limit: 100 });
+      if (Array.isArray(payload?.mangas) && payload.mangas.length > 0) {
+        const rows = payload.mangas.slice(0, 20).map((anime) => toExploreAnime(anime));
+        const totalPages = Math.max(1, toNumber(payload?.totalPages, 1));
+        const currentPage = Math.max(1, toNumber(payload?.page, pageNum));
+        return {
+          pageInfo: {
+            currentPage,
+            totalPages,
+            hasNextPage: currentPage < totalPages,
+          },
+          response: rows,
+        };
+      }
+
       const seen = new Set();
       const mapped = [];
       for (const episode of payload?.episodes || []) {
@@ -651,11 +693,11 @@ export async function getScheduleData(dateQuery, c) {
   const episodes = await getLatestEpisodes(c);
   const scheduleItems = episodes
     .map((entry) => {
-      const created = parseDateFromCreatedAt(entry?.createdAt);
+      const created = parseDateFromCreatedAt(entry?.createdAt || entry?.updated_at || entry?.date);
       if (!created || created.getDate() !== safeDay) {
         return null;
       }
-      const anime = unwrapAnimeEntry(entry?.anime_info);
+      const anime = unwrapAnimeEntry(entry?.anime_info || entry?.anime || entry);
       if (!anime) {
         return null;
       }
@@ -664,7 +706,7 @@ export async function getScheduleData(dateQuery, c) {
         alternativeTitle: toSafeString(anime?.Japanese || anime?.title || anime?.English),
         id: getAnimeSlug(anime),
         time: formatTimeHHMM(created),
-        episode: toNumber(entry?.episodeNumber, 0),
+        episode: toNumber(entry?.episodeNumber || entry?.latest_chapter || entry?.sub, 0),
       };
     })
     .filter(Boolean);

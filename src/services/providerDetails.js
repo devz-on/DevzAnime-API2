@@ -52,6 +52,18 @@ async function pickStreamUrlWithFallback(url, c) {
   return candidates[0] || url;
 }
 
+function pickSynopsis(anime) {
+  return toSafeString(
+    anime?.synopsis ||
+      anime?.description ||
+      anime?.plot_summary ||
+      anime?.storyline ||
+      anime?.summary ||
+      anime?.about ||
+      ''
+  );
+}
+
 function toFiniteNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -73,6 +85,310 @@ function parseEmbeddedStreamUrl(url) {
   } catch {
     return null;
   }
+}
+
+const HIANIME_AJAX_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
+
+function encodeBase64Binary(input) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let out = '';
+  for (let index = 0; index < input.length; index += 3) {
+    const sextets = [undefined, undefined, undefined, undefined];
+    sextets[0] = input.charCodeAt(index) >> 2;
+    sextets[1] = (3 & input.charCodeAt(index)) << 4;
+    if (input.length > index + 1) {
+      sextets[1] |= input.charCodeAt(index + 1) >> 4;
+      sextets[2] = (15 & input.charCodeAt(index + 1)) << 2;
+    }
+    if (input.length > index + 2) {
+      sextets[2] |= input.charCodeAt(index + 2) >> 6;
+      sextets[3] = 63 & input.charCodeAt(index + 2);
+    }
+    for (let cursor = 0; cursor < sextets.length; cursor += 1) {
+      out += sextets[cursor] === undefined ? '=' : chars[sextets[cursor]];
+    }
+  }
+  return out;
+}
+
+function toSafeBase64(value) {
+  return encodeBase64Binary(value).replace(/\//g, '_').replace(/\+/g, '-');
+}
+
+function rc4Transform(key, input) {
+  const box = [];
+  for (let index = 0; index < 256; index += 1) {
+    box[index] = index;
+  }
+
+  let keyIndex = 0;
+  for (let index = 0; index < 256; index += 1) {
+    keyIndex = (keyIndex + box[index] + key.charCodeAt(index % key.length)) % 256;
+    const swap = box[index];
+    box[index] = box[keyIndex];
+    box[keyIndex] = swap;
+  }
+
+  let i = 0;
+  let j = 0;
+  let output = '';
+  for (let cursor = 0; cursor < input.length; cursor += 1) {
+    i = (i + 1) % 256;
+    j = (j + box[i]) % 256;
+    const swap = box[i];
+    box[i] = box[j];
+    box[j] = swap;
+    const xorIndex = (box[i] + box[j]) % 256;
+    output += String.fromCharCode(input.charCodeAt(cursor) ^ box[xorIndex]);
+  }
+
+  return output;
+}
+
+function encodeVrf(value) {
+  const input = encodeURIComponent(toSafeString(value));
+  const firstPass = toSafeBase64(rc4Transform('ysJhV6U27FVIjjuk', input));
+  let shifted = '';
+  for (let index = 0; index < firstPass.length; index += 1) {
+    let code = firstPass.charCodeAt(index);
+    if (index % 8 === 1) code += 3;
+    else if (index % 8 === 7) code += 5;
+    else if (index % 8 === 2) code -= 4;
+    else if (index % 8 === 4) code -= 2;
+    else if (index % 8 === 6) code += 4;
+    else if (index % 8 === 0) code -= 3;
+    else if (index % 8 === 3) code += 2;
+    else if (index % 8 === 5) code += 5;
+    shifted += String.fromCharCode(code);
+  }
+
+  return toSafeBase64(shifted).replace(/[a-zA-Z]/g, (char) => {
+    const limit = char <= 'Z' ? 90 : 122;
+    const rotated = char.charCodeAt(0) + 13;
+    return String.fromCharCode(rotated <= limit ? rotated : rotated - 26);
+  });
+}
+
+function getHianimeAjaxHeaders(referer) {
+  const safeReferer = toSafeString(referer || 'https://hianime.dk/');
+  return {
+    referer: safeReferer,
+    'x-requested-with': 'XMLHttpRequest',
+    'user-agent': HIANIME_AJAX_USER_AGENT,
+    accept: 'application/json, text/javascript, */*; q=0.01',
+    'sec-ch-ua': '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+  };
+}
+
+function toHianimeSiteOrigin(c) {
+  const config = getProviderConfig(c);
+  try {
+    return new URL(toSafeString(config.hianimesReferer || 'https://hianime.dk/')).origin;
+  } catch {
+    return 'https://hianime.dk';
+  }
+}
+
+function extractHtmlAttributeValue(tag, attribute) {
+  const safeAttr = String(attribute).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = String(tag).match(new RegExp(`\\b${safeAttr}\\s*=\\s*(['"])(.*?)\\1`, 'i'));
+  return toSafeString(match?.[2]);
+}
+
+function parseHianimeAjaxEpisodeItems(html) {
+  const body = toSafeString(html);
+  if (!body) {
+    return [];
+  }
+
+  const rows = [];
+  const itemRegex = /<a[^>]*class=["'][^"']*\bssl-item\b[^"']*["'][^>]*>/gi;
+  let match = itemRegex.exec(body);
+  while (match) {
+    const tag = match[0];
+    const ids = extractHtmlAttributeValue(tag, 'data-ids');
+    if (ids) {
+      rows.push({
+        number: toNumber(extractHtmlAttributeValue(tag, 'data-num'), 0),
+        slug: extractHtmlAttributeValue(tag, 'data-slug'),
+        mal: extractHtmlAttributeValue(tag, 'data-mal'),
+        ids,
+        title: extractHtmlAttributeValue(tag, 'title'),
+      });
+    }
+    match = itemRegex.exec(body);
+  }
+
+  return rows;
+}
+
+function parseServerItemsFromAjaxHtml(html) {
+  const body = toSafeString(html);
+  if (!body) {
+    return [];
+  }
+
+  const rows = [];
+  const itemRegex = /<a[^>]*class=["'][^"']*\bbtn\b[^"']*["'][^>]*>/gi;
+  let match = itemRegex.exec(body);
+  while (match) {
+    const tag = match[0];
+    const linkId = extractHtmlAttributeValue(tag, 'data-link-id');
+    const type = toSafeString(extractHtmlAttributeValue(tag, 'data-type')).toLowerCase();
+    const rawName = extractHtmlAttributeValue(tag, 'title') || extractHtmlAttributeValue(tag, 'data-server');
+    if (linkId && (type === 'sub' || type === 'dub')) {
+      rows.push({
+        type,
+        name: toSafeString(rawName || type || 'server'),
+        linkId,
+      });
+    }
+    match = itemRegex.exec(body);
+  }
+
+  return rows;
+}
+
+function buildServerInternalRows(list, forcedType = '') {
+  return list.map((entry, index) => ({
+    index: index + 1,
+    type: toSafeString(forcedType || entry?.type).toLowerCase() === 'dub' ? 'dub' : 'sub',
+    id: index + 1,
+    name: toSafeString(entry?.name || `server-${index + 1}`).toLowerCase(),
+    _url: toSafeString(entry?.linkId || ''),
+    _isAjaxToken: true,
+  }));
+}
+
+async function fetchJsonWithHeaders(url, headers) {
+  const response = await fetch(url, { headers });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload || typeof payload !== 'object') {
+    throw new NotFoundError('hianime ajax request failed');
+  }
+  return payload;
+}
+
+async function loadHianimeAjaxEpisodes(anime, c) {
+  const animeId = Math.max(toNumber(anime?.manga_id, 0), toNumber(anime?.id, 0));
+  if (!animeId) {
+    return [];
+  }
+
+  const origin = toHianimeSiteOrigin(c);
+  const vrf = encodeVrf(String(animeId));
+  const url = `${origin}/ajax/episode/list/${animeId}?vrf=${encodeURIComponent(vrf)}`;
+  const payload = await fetchJsonWithHeaders(url, getHianimeAjaxHeaders(`${origin}/`));
+  if (toNumber(payload?.status, 0) !== 200) {
+    throw new NotFoundError('hianime ajax episodes unavailable');
+  }
+
+  return parseHianimeAjaxEpisodeItems(payload?.result);
+}
+
+async function loadHianimeAjaxServersForEpisode(anime, episode, c) {
+  const origin = toHianimeSiteOrigin(c);
+  const headers = getHianimeAjaxHeaders(`${origin}/`);
+  const episodeNumber = Math.max(1, toNumber(episode?.episodeNumber, 1));
+  const rows = await loadHianimeAjaxEpisodes(anime, c);
+  const activeEpisode = rows.find((row) => toNumber(row?.number, -1) === episodeNumber) || rows[0];
+  if (!activeEpisode?.ids) {
+    return { sub: [], dub: [] };
+  }
+
+  let mergedRows = [];
+  try {
+    const listUrl = `${origin}/ajax/server/list?servers=${encodeURIComponent(activeEpisode.ids)}`;
+    const listPayload = await fetchJsonWithHeaders(listUrl, headers);
+    if (toNumber(listPayload?.status, 0) === 200) {
+      mergedRows = parseServerItemsFromAjaxHtml(listPayload?.result);
+    }
+  } catch {
+    // fall through to MAL fallback
+  }
+
+  if (mergedRows.length < 1 && activeEpisode.mal && activeEpisode.slug) {
+    const ts = Math.floor(Date.now() / 1000);
+    const malUrl = `${origin}/ajax/mal?mal=${encodeURIComponent(activeEpisode.mal)}&ep=${encodeURIComponent(
+      activeEpisode.slug
+    )}&ts=${ts}`;
+    const malPayload = await fetchJsonWithHeaders(malUrl, headers);
+    mergedRows = Object.entries(malPayload || {})
+      .filter(([key]) => key !== 'status')
+      .flatMap(([key, value]) => {
+        if (!value || typeof value !== 'object') {
+          return [];
+        }
+        const subUrl = toSafeString(value?.sub?.url);
+        const dubUrl = toSafeString(value?.dub?.url);
+        const name = toSafeString(key).toLowerCase();
+        return [
+          ...(subUrl ? [{ type: 'sub', name, linkId: subUrl }] : []),
+          ...(dubUrl ? [{ type: 'dub', name, linkId: dubUrl }] : []),
+        ];
+      });
+  }
+
+  const sub = buildServerInternalRows(
+    mergedRows.filter((entry) => entry.type === 'sub')
+  );
+  const dub = buildServerInternalRows(
+    mergedRows.filter((entry) => entry.type === 'dub')
+  );
+  return { sub, dub };
+}
+
+async function resolveHianimeAjaxStreamByToken(linkToken, normalizedType, id, serverName, c) {
+  const token = toSafeString(linkToken);
+  if (!token) {
+    throw new NotFoundError('stream source not found');
+  }
+
+  const origin = toHianimeSiteOrigin(c);
+  const headers = getHianimeAjaxHeaders(`${origin}/`);
+  const url = `${origin}/ajax/server?get=${encodeURIComponent(token)}`;
+  const payload = await fetchJsonWithHeaders(url, headers);
+  if (toNumber(payload?.status, 0) !== 200) {
+    throw new NotFoundError('stream source not found');
+  }
+
+  const resolvedUrl = toSafeString(payload?.result?.url);
+  if (!resolvedUrl) {
+    throw new NotFoundError('stream source not found');
+  }
+
+  if (isLikelyDirectMediaUrl(resolvedUrl)) {
+    const selectedUrl = await pickStreamUrlWithFallback(resolvedUrl, c);
+    return [
+      {
+        id,
+        type: normalizedType,
+        link: {
+          file: selectedUrl,
+          type: mediaTypeForUrl(selectedUrl),
+        },
+        tracks: [],
+        intro: normalizeStreamWindow(payload?.result?.skip_data?.intro),
+        outro: normalizeStreamWindow(payload?.result?.skip_data?.outro),
+        server: serverName,
+        referer: `${origin}/`,
+      },
+    ];
+  }
+
+  const embedded = await resolveEmbeddedStreamData(resolvedUrl, serverName, normalizedType, id, c);
+  if (embedded) {
+    return embedded;
+  }
+
+  throw new validationError('unable to resolve stream to direct media source', {
+    id,
+    server: serverName,
+    type: normalizedType,
+  });
 }
 
 function extractHtmlAttribute(tag, attribute) {
@@ -338,24 +654,31 @@ export async function getAnimeInfoData(id, c) {
     .slice(0, 12);
 
   const aired = parseAired(anime?.Aired);
+  const studiosSource = toSafeString(anime?.Licensors || anime?.studios);
+  const producersSource = toSafeString(anime?.Producers || anime?.producers);
   return {
     ...toBasicAnime(anime),
-    rating: toSafeString(anime?.Rating || ''),
-    type: toSafeString(anime?.Type || 'TV'),
-    is18Plus: toSafeString(anime?.Rating).toLowerCase().startsWith('r'),
-    synopsis: toSafeString(anime?.synopsis || ''),
+    rating: toSafeString(anime?.Rating || anime?.rating || ''),
+    type: toSafeString(anime?.Type || anime?.type || 'TV'),
+    is18Plus: toSafeString(anime?.Rating || anime?.rating).toLowerCase().startsWith('r'),
+    synopsis: pickSynopsis(anime),
     synonyms: toSafeString(anime?.alternateTitle || ''),
     aired,
-    premiered: toSafeString(anime?.Premiered || ''),
-    duration: toSafeString(anime?.Duration || ''),
-    status: toSafeString(anime?.Status || ''),
+    premiered: toSafeString(anime?.Premiered || anime?.premiered || ''),
+    duration: toSafeString(anime?.Duration || anime?.duration || ''),
+    status: toSafeString(anime?.Status || anime?.status || ''),
     MAL_score: toSafeString(anime?.Score || anime?.score || ''),
-    genres: Array.isArray(anime?.genres) ? anime.genres : [],
-    studios: toSafeString(anime?.Licensors)
+    genres: Array.isArray(anime?.genres)
+      ? anime.genres
+      : toSafeString(anime?.genre)
+          .split(',')
+          .map((value) => toSafeString(value))
+          .filter(Boolean),
+    studios: studiosSource
       .split(',')
       .map((value) => toSafeString(value))
       .filter(Boolean),
-    producers: toSafeString(anime?.Producers)
+    producers: producersSource
       .split(',')
       .map((value) => slugify(value))
       .filter(Boolean),
@@ -390,9 +713,20 @@ export async function getEpisodesData(id, c) {
 }
 
 export async function getServersData(episodeId, c) {
-  const { episode } = await resolveEpisode(episodeId, c);
-  const sub = buildServerItems(episode?.link?.sub, 'sub');
-  const dub = buildServerItems(episode?.link?.dub, 'dub');
+  const { anime, episode } = await resolveEpisode(episodeId, c);
+  let sub = buildServerItems(episode?.link?.sub, 'sub');
+  let dub = buildServerItems(episode?.link?.dub, 'dub');
+
+  if (sub.length < 1 && dub.length < 1) {
+    try {
+      const ajaxServers = await loadHianimeAjaxServersForEpisode(anime, episode, c);
+      sub = ajaxServers.sub;
+      dub = ajaxServers.dub;
+    } catch {
+      // leave default empty server sets
+    }
+  }
+
   return {
     episode: toNumber(episode?.episodeNumber, 0),
     sub: sub.map((server) => ({
@@ -426,6 +760,10 @@ export async function getStreamData(id, serverName, type, c) {
   const selectedUrlRaw = toSafeString(selected._url);
   if (!selectedUrlRaw) {
     throw new validationError('invalid stream source url');
+  }
+
+  if (selected?._isAjaxToken) {
+    return resolveHianimeAjaxStreamByToken(selectedUrlRaw, normalizedType, id, selected.name, c);
   }
 
   if (isLikelyDirectMediaUrl(selectedUrlRaw)) {
