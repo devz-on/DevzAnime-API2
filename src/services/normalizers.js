@@ -123,6 +123,14 @@ export function toExploreAnime(anime) {
 }
 
 export function toSpotlightAnime(anime, rank = 1) {
+  const synopsis = toSafeString(
+    anime?.synopsis ||
+      anime?.description ||
+      anime?.plot_summary ||
+      anime?.storyline ||
+      anime?.summary ||
+      anime?.about
+  );
   return {
     ...toBasicAnime(anime),
     rank,
@@ -130,7 +138,7 @@ export function toSpotlightAnime(anime, rank = 1) {
     quality: toSafeString(anime?.Rating || 'HD'),
     duration: toSafeString(anime?.Duration || 'N/A'),
     aired: toSafeString(anime?.Aired || ''),
-    synopsis: toSafeString(anime?.synopsis || ''),
+    synopsis,
   };
 }
 

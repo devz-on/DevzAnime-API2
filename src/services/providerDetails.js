@@ -232,17 +232,23 @@ function parseServerItemsFromAjaxHtml(html) {
   }
 
   const rows = [];
-  const itemRegex = /<a[^>]*class=["'][^"']*\bbtn\b[^"']*["'][^>]*>/gi;
+  const itemRegex = /<a[^>]*class=["'][^"']*\bbtn\b[^"']*["'][^>]*>[\s\S]*?<\/a>/gi;
   let match = itemRegex.exec(body);
   while (match) {
-    const tag = match[0];
-    const linkId = extractHtmlAttributeValue(tag, 'data-link-id');
-    const type = toSafeString(extractHtmlAttributeValue(tag, 'data-type')).toLowerCase();
-    const rawName = extractHtmlAttributeValue(tag, 'title') || extractHtmlAttributeValue(tag, 'data-server');
+    const block = match[0];
+    const openTag = block.match(/^<a[^>]*>/i)?.[0] || '';
+    const linkId = extractHtmlAttributeValue(openTag, 'data-link-id');
+    const type = toSafeString(extractHtmlAttributeValue(openTag, 'data-type')).toLowerCase();
+    const attributeName =
+      extractHtmlAttributeValue(openTag, 'title') ||
+      extractHtmlAttributeValue(openTag, 'data-server') ||
+      extractHtmlAttributeValue(openTag, 'data-provider');
+    const innerName = stripHtmlTags(block.match(/<a[^>]*>([\s\S]*?)<\/a>/i)?.[1] || '');
+    const rawName = toSafeString(attributeName || innerName);
     if (linkId && (type === 'sub' || type === 'dub')) {
       rows.push({
         type,
-        name: toSafeString(rawName || type || 'server'),
+        name: rawName || type || 'server',
         linkId,
       });
     }
@@ -252,15 +258,49 @@ function parseServerItemsFromAjaxHtml(html) {
   return rows;
 }
 
+function normalizeServerSlug(name) {
+  return toSafeString(name)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function fallbackServerName(type, index) {
+  const known = toSafeString(SERVER_NAMES[index]).toLowerCase();
+  if (known) {
+    return known;
+  }
+  return `${type}-${index + 1}`;
+}
+
 function buildServerInternalRows(list, forcedType = '') {
-  return list.map((entry, index) => ({
-    index: index + 1,
-    type: toSafeString(forcedType || entry?.type).toLowerCase() === 'dub' ? 'dub' : 'sub',
-    id: index + 1,
-    name: toSafeString(entry?.name || `server-${index + 1}`).toLowerCase(),
-    _url: toSafeString(entry?.linkId || ''),
-    _isAjaxToken: true,
-  }));
+  const rows = [];
+  const seen = new Map();
+
+  list.forEach((entry, index) => {
+    const type = toSafeString(forcedType || entry?.type).toLowerCase() === 'dub' ? 'dub' : 'sub';
+    const initialSlug = normalizeServerSlug(entry?.name);
+    const genericSlug =
+      !initialSlug ||
+      initialSlug === type ||
+      initialSlug === 'server' ||
+      initialSlug === `${type}-server`;
+    const baseName = genericSlug ? fallbackServerName(type, index) : initialSlug;
+    const seenCount = seen.get(baseName) || 0;
+    seen.set(baseName, seenCount + 1);
+    const uniqueName = seenCount > 0 ? `${baseName}-${seenCount + 1}` : baseName;
+
+    rows.push({
+      index: index + 1,
+      type,
+      id: index + 1,
+      name: uniqueName,
+      _url: toSafeString(entry?.linkId || ''),
+      _isAjaxToken: true,
+    });
+  });
+
+  return rows;
 }
 
 async function fetchJsonWithHeaders(url, headers) {
