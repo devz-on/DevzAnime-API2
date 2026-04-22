@@ -1,32 +1,39 @@
-import config from '../../config/config.js';
-import serversExtract from './servers.extract.js';
-import { NotFoundError } from '../../utils/errors.js';
+import { getServersData as getProviderServersData } from '../../services/providerDetails.js';
+import {
+  getHindiServersFallback,
+  isLikelyHindiEpisodeIdentifier,
+  isServersResponseEmpty,
+  shouldFallbackToHindiOnError,
+} from '../../services/hindiFallback.js';
 
-export default async function (c) {
-  const { id } = c.req.valid('param');
-
-  const response = await getServers(id);
-
-  return response;
+function toPublicServersPayload(payload) {
+  const publicPayload = { ...(payload || {}) };
+  delete publicPayload._subRaw;
+  delete publicPayload._dubRaw;
+  return publicPayload;
 }
 
-export async function getServers(id) {
-  const episode = id.split('ep=').at(-1);
-  const ajaxUrl = `/ajax/v2/episode/servers?episodeId=${episode}`;
-  // "/ajax/v2/episode/servers?episodeId=${id}"
-  const Referer = `/watch/${id.replace('::', '?')}`;
+export default async function serversHandler(c) {
+  const { id } = c.req.valid('param');
+  return getServers(id, c);
+}
+
+export async function getServers(id, c) {
+  if (isLikelyHindiEpisodeIdentifier(id)) {
+    return getHindiServersFallback(id, c);
+  }
 
   try {
-    const res = await fetch(config.baseurl + ajaxUrl, {
-      headers: {
-        Referer: config.baseurl + Referer,
-        ...config.headers,
-      },
-    });
-    const data = await res.json();
-    const response = serversExtract(data.html);
-    return response;
-  } catch {
-    throw new NotFoundError('servers not found');
+    const response = toPublicServersPayload(await getProviderServersData(id, c));
+    if (!isServersResponseEmpty(response)) {
+      return response;
+    }
+
+    return getHindiServersFallback(id, c);
+  } catch (error) {
+    if (shouldFallbackToHindiOnError(error)) {
+      return getHindiServersFallback(id, c);
+    }
+    throw error;
   }
 }

@@ -1,12 +1,9 @@
-import { axiosInstance } from '../../../services/axiosInstance.js';
-import { validationError } from '../../../utils/errors.js';
-import infoExtract from '../info.extract.js';
+import { getRandomAnimeInfoData } from '../../../services/providerDetails.js';
 
-export default async function randomAnimeInfoHandler() {
-  const result = await axiosInstance(`/random`);
-  if (!result.success) {
-    throw new validationError(result.message, 'something went wrong');
+export default async function randomAnimeInfoHandler(c) {
+  const response = await getRandomAnimeInfoData(c);
+  if (response && typeof response === 'object') {
+    delete response._episodesRaw;
   }
-  const response = infoExtract(result.data);
   return response;
 }

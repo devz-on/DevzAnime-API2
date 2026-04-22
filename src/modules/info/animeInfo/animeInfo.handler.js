@@ -1,13 +1,27 @@
-import { axiosInstance } from '../../../services/axiosInstance.js';
-import { validationError } from '../../../utils/errors.js';
-import infoExtract from '../info.extract.js';
+import { getAnimeInfoData } from '../../../services/providerDetails.js';
+import {
+  getHindiAnimeInfoFallback,
+  isLikelyHindiAnimeIdentifier,
+  shouldFallbackToHindiOnError,
+} from '../../../services/hindiFallback.js';
 
 export default async function animeInfo(c) {
   const { id } = c.req.valid('param');
 
-  const result = await axiosInstance(`/${id}`);
-  if (!result.success) {
-    throw new validationError(result.message, 'maybe id is incorrect : ' + id);
+  if (isLikelyHindiAnimeIdentifier(id)) {
+    return getHindiAnimeInfoFallback(id, c);
   }
-  return infoExtract(result.data);
+
+  try {
+    const response = await getAnimeInfoData(id, c);
+    if (response && typeof response === 'object') {
+      delete response._episodesRaw;
+    }
+    return response;
+  } catch (error) {
+    if (shouldFallbackToHindiOnError(error)) {
+      return getHindiAnimeInfoFallback(id, c);
+    }
+    throw error;
+  }
 }
