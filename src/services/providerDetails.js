@@ -273,6 +273,10 @@ function fallbackServerName(type, index) {
   return `${type}-${index + 1}`;
 }
 
+function isHttpUrl(value) {
+  return /^https?:\/\//i.test(toSafeString(value));
+}
+
 function buildServerInternalRows(list, forcedType = '') {
   const rows = [];
   const seen = new Map();
@@ -296,7 +300,7 @@ function buildServerInternalRows(list, forcedType = '') {
       id: index + 1,
       name: uniqueName,
       _url: toSafeString(entry?.linkId || ''),
-      _isAjaxToken: true,
+      _isAjaxToken: !isHttpUrl(entry?.linkId),
     });
   });
 
@@ -385,6 +389,32 @@ async function resolveHianimeAjaxStreamByToken(linkToken, normalizedType, id, se
   const token = toSafeString(linkToken);
   if (!token) {
     throw new NotFoundError('stream source not found');
+  }
+
+  if (isHttpUrl(token)) {
+    if (isLikelyDirectMediaUrl(token)) {
+      const selectedUrl = await pickStreamUrlWithFallback(token, c);
+      return [
+        {
+          id,
+          type: normalizedType,
+          link: {
+            file: selectedUrl,
+            type: mediaTypeForUrl(selectedUrl),
+          },
+          tracks: [],
+          intro: { start: 0, end: 0 },
+          outro: { start: 0, end: 0 },
+          server: serverName,
+          referer: `${new URL(token).origin}/`,
+        },
+      ];
+    }
+
+    const embedded = await resolveEmbeddedStreamData(token, serverName, normalizedType, id, c);
+    if (embedded) {
+      return embedded;
+    }
   }
 
   const origin = toHianimeSiteOrigin(c);
@@ -765,6 +795,16 @@ export async function getServersData(episodeId, c) {
     } catch {
       // leave default empty server sets
     }
+  }
+
+  if (sub.length < 1 && dub.length > 0) {
+    sub = dub.map((server, index) => ({
+      ...server,
+      index: index + 1,
+      type: 'sub',
+      id: index + 1,
+      name: `${server.name}-sub-fallback`,
+    }));
   }
 
   return {
