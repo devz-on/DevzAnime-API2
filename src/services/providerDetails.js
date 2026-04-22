@@ -17,7 +17,14 @@ import {
   toNumber,
   toSafeString,
 } from './normalizers.js';
-import { buildProxyUrl, fetchJikan, fetchJsonWithFallback, getProviderConfig, probeUrl } from './upstream.js';
+import {
+  buildProxyUrl,
+  fetchJikan,
+  fetchJsonWithFallback,
+  fetchTextWithFallback,
+  getProviderConfig,
+  probeUrl,
+} from './upstream.js';
 
 function buildServerItems(urls, type) {
   const list = Array.isArray(urls) ? urls : [];
@@ -62,6 +69,25 @@ function pickSynopsis(anime) {
       anime?.about ||
       ''
   );
+}
+
+async function pickSynopsisWithFallback(anime, c) {
+  const fromProvider = pickSynopsis(anime);
+  if (fromProvider) {
+    return fromProvider;
+  }
+
+  const malId = toNumber(anime?.mal_id, 0);
+  if (!malId) {
+    return '';
+  }
+
+  try {
+    const payload = await fetchJikan(`/anime/${malId}`, c);
+    return toSafeString(payload?.data?.synopsis || payload?.data?.background || '');
+  } catch {
+    return '';
+  }
 }
 
 function toFiniteNumber(value, fallback = 0) {
@@ -256,6 +282,23 @@ function parseServerItemsFromAjaxHtml(html) {
   }
 
   return rows;
+}
+
+function normalizeServerType(rawType) {
+  const normalized = toSafeString(rawType).toLowerCase();
+  if (!normalized) {
+    return '';
+  }
+
+  if (normalized === 'dub' || normalized.includes('dub')) {
+    return 'dub';
+  }
+
+  if (normalized === 'sub' || normalized.includes('sub')) {
+    return 'sub';
+  }
+
+  return '';
 }
 
 function normalizeServerSlug(name) {
@@ -487,7 +530,7 @@ function parseServerItemsFromHtml(html) {
     const block = match[0];
     const openTag = block.match(/^<div[^>]*>/i)?.[0] || '';
     const id = extractHtmlAttribute(openTag, 'data-id');
-    const type = toSafeString(extractHtmlAttribute(openTag, 'data-type')).toLowerCase();
+    const type = normalizeServerType(extractHtmlAttribute(openTag, 'data-type'));
     const serverNameRaw = block.match(/<a[^>]*>([\s\S]*?)<\/a>/i)?.[1] || '';
     const name = stripHtmlTags(serverNameRaw).toLowerCase();
     if (id && type) {
@@ -699,7 +742,93 @@ async function resolveEmbeddedStreamDataFromLegacyGetSources(selectedUrl, select
   }
 }
 
+function parseProviderStreamPath(url) {
+  try {
+    const parsed = new URL(url);
+    const match = parsed.pathname.match(/\/stream\/s-\d+\/([^/?#]+)\/(sub|dub)(?:\/|$)/i);
+    if (!match?.[1]) {
+      return null;
+    }
+
+    return {
+      sourceId: toSafeString(match[1]),
+      type: toSafeString(match[2]).toLowerCase() === 'dub' ? 'dub' : 'sub',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function extractProviderDataIdFromHtml(html) {
+  return toSafeString(String(html).match(/data-id\s*=\s*['"](\d+)['"]/i)?.[1]);
+}
+
+async function resolveEmbeddedStreamDataFromProviderFallback(selectedUrl, selectedName, normalizedType, id, c) {
+  const parsed = parseProviderStreamPath(selectedUrl);
+  if (!parsed?.sourceId) {
+    return null;
+  }
+
+  const streamType = parsed.type || normalizedType;
+  const providerCandidates = [
+    { origin: 'https://megaplay.buzz', referer: 'https://megaplay.buzz/' },
+    { origin: 'https://vidwish.live', referer: 'https://vidwish.live/' },
+  ];
+
+  for (const provider of providerCandidates) {
+    try {
+      const streamPageUrl = `${provider.origin}/stream/s-2/${encodeURIComponent(
+        parsed.sourceId
+      )}/${encodeURIComponent(streamType)}`;
+      const streamPageHtml = await fetchTextWithFallback(streamPageUrl, c, provider.referer);
+      const dataId = extractProviderDataIdFromHtml(streamPageHtml);
+      if (!dataId) {
+        continue;
+      }
+
+      const sourcesUrl = `${provider.origin}/stream/getSources?id=${encodeURIComponent(dataId)}`;
+      const sourcePayload = await fetchJsonWithFallback(sourcesUrl, c, provider.referer);
+      const sourceFile = extractStreamFileFromSources(sourcePayload?.sources);
+      if (!sourceFile) {
+        continue;
+      }
+
+      const selectedFile = await pickStreamUrlWithFallback(sourceFile, c);
+      return [
+        {
+          id,
+          type: normalizedType,
+          link: {
+            file: selectedFile,
+            type: mediaTypeForUrl(selectedFile),
+          },
+          tracks: normalizeTracks(sourcePayload?.tracks),
+          intro: normalizeStreamWindow(sourcePayload?.intro),
+          outro: normalizeStreamWindow(sourcePayload?.outro),
+          server: selectedName,
+          referer: provider.referer,
+        },
+      ];
+    } catch {
+      // Try the next provider mirror.
+    }
+  }
+
+  return null;
+}
+
 async function resolveEmbeddedStreamData(selectedUrl, selectedName, normalizedType, id, c) {
+  const resolvedFromProviderFallback = await resolveEmbeddedStreamDataFromProviderFallback(
+    selectedUrl,
+    selectedName,
+    normalizedType,
+    id,
+    c
+  );
+  if (resolvedFromProviderFallback) {
+    return resolvedFromProviderFallback;
+  }
+
   const resolvedFromNineAjax = await resolveEmbeddedStreamDataFromNineAjax(
     selectedUrl,
     selectedName,
@@ -724,6 +853,7 @@ export async function getAnimeInfoData(id, c) {
     .slice(0, 12);
 
   const aired = parseAired(anime?.Aired);
+  const synopsis = await pickSynopsisWithFallback(anime, c);
   const studiosSource = toSafeString(anime?.Licensors || anime?.studios);
   const producersSource = toSafeString(anime?.Producers || anime?.producers);
   return {
@@ -731,7 +861,7 @@ export async function getAnimeInfoData(id, c) {
     rating: toSafeString(anime?.Rating || anime?.rating || ''),
     type: toSafeString(anime?.Type || anime?.type || 'TV'),
     is18Plus: toSafeString(anime?.Rating || anime?.rating).toLowerCase().startsWith('r'),
-    synopsis: pickSynopsis(anime),
+    synopsis,
     synonyms: toSafeString(anime?.alternateTitle || ''),
     aired,
     premiered: toSafeString(anime?.Premiered || anime?.premiered || ''),
@@ -794,6 +924,24 @@ export async function getServersData(episodeId, c) {
       dub = ajaxServers.dub;
     } catch {
       // leave default empty server sets
+    }
+  }
+
+  if (sub.length < 1 && dub.length < 1) {
+    const derivedToken = extractNumericSuffix(
+      toSafeString(episode?._id || episode?.id || episode?.chapter_id || episode?.chapterId)
+    );
+    if (derivedToken > 0) {
+      sub = [
+        {
+          index: 1,
+          type: 'sub',
+          id: 1,
+          name: 'hd-1',
+          _url: String(derivedToken),
+          _isAjaxToken: true,
+        },
+      ];
     }
   }
 
