@@ -169,19 +169,38 @@ export function paginate(items, page, pageSize = DEFAULT_PAGE_SIZE) {
 
 export function isLikelyDirectMediaUrl(url) {
   const lower = toSafeString(url).toLowerCase();
+  if (!lower) {
+    return false;
+  }
+
+  if (/\/stream\/s-\d+\//i.test(lower) || lower.includes('/embed-')) {
+    return false;
+  }
+
   return (
     lower.includes('.m3u8') ||
     lower.includes('.mp4') ||
     lower.includes('.mkv') ||
     lower.includes('.webm') ||
     lower.includes('.mpd') ||
-    lower.includes('.ts')
+    lower.includes('.ts') ||
+    lower.includes('/manifest') ||
+    lower.includes('/playlist/') ||
+    lower.includes('/hls/') ||
+    /[?&](playlist|manifest|m3u8)=/.test(lower)
   );
 }
 
 export function mediaTypeForUrl(url) {
   const lower = toSafeString(url).toLowerCase();
-  if (lower.includes('.m3u8')) return 'application/x-mpegURL';
+  if (
+    lower.includes('.m3u8') ||
+    lower.includes('/manifest') ||
+    lower.includes('/playlist/') ||
+    lower.includes('/hls/') ||
+    /[?&](playlist|manifest|m3u8)=/.test(lower)
+  )
+    return 'application/x-mpegURL';
   if (lower.includes('.mpd')) return 'application/dash+xml';
   if (lower.includes('.mp4')) return 'video/mp4';
   if (lower.includes('.webm')) return 'video/webm';
