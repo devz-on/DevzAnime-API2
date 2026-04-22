@@ -90,6 +90,23 @@ export function buildProxyUrl(proxyBaseUrl, targetUrl, referer) {
   return url.toString();
 }
 
+function withCacheBust(url, cacheBustToken) {
+  if (!url) {
+    return '';
+  }
+  const token = toSafeString(cacheBustToken);
+  if (!token) {
+    return url;
+  }
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set('_cb', token);
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -122,10 +139,11 @@ async function readText(response) {
 async function fetchJsonWithResponse(targetUrl, c, overrideReferer) {
   const config = getProviderConfig(c);
   const referer = overrideReferer || config.hianimesReferer;
+  const cacheBustToken = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const candidates = [
     targetUrl,
-    buildProxyUrl(config.m3u8ProxyUrl, targetUrl, referer),
-    buildProxyUrl(config.daniProxyUrl, targetUrl, referer),
+    withCacheBust(buildProxyUrl(config.m3u8ProxyUrl, targetUrl, referer), cacheBustToken),
+    withCacheBust(buildProxyUrl(config.daniProxyUrl, targetUrl, referer), cacheBustToken),
   ].filter(Boolean);
 
   let lastError = null;
@@ -174,10 +192,11 @@ async function fetchJsonWithResponse(targetUrl, c, overrideReferer) {
 async function fetchTextWithResponse(targetUrl, c, overrideReferer) {
   const config = getProviderConfig(c);
   const referer = overrideReferer || config.hianimesReferer;
+  const cacheBustToken = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const candidates = [
     targetUrl,
-    buildProxyUrl(config.m3u8ProxyUrl, targetUrl, referer),
-    buildProxyUrl(config.daniProxyUrl, targetUrl, referer),
+    withCacheBust(buildProxyUrl(config.m3u8ProxyUrl, targetUrl, referer), cacheBustToken),
+    withCacheBust(buildProxyUrl(config.daniProxyUrl, targetUrl, referer), cacheBustToken),
   ].filter(Boolean);
 
   let lastError = null;

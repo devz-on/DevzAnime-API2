@@ -22,6 +22,7 @@ import {
   toSpotlightAnime,
   unwrapAnimeEntry,
 } from './normalizers.js';
+import { getHindiDubbedData } from './desiDub.js';
 import { fetchApi, getProviderConfig } from './upstream.js';
 
 const sharedCache = {
@@ -151,12 +152,44 @@ function runInBackground(c, task) {
   const promise = Promise.resolve()
     .then(task)
     .catch(() => null);
-  const waitUntil = c?.executionCtx?.waitUntil;
+  let executionCtx = null;
+  let waitUntil = null;
+  try {
+    executionCtx = c?.executionCtx;
+    waitUntil = executionCtx?.waitUntil;
+  } catch {
+    executionCtx = null;
+    waitUntil = null;
+  }
   if (typeof waitUntil === 'function') {
-    waitUntil.call(c.executionCtx, promise);
-    return;
+    try {
+      waitUntil.call(executionCtx, promise);
+      return;
+    } catch {
+      // Some non-worker runtimes expose waitUntil but do not provide a valid ExecutionContext.
+    }
   }
   void promise;
+}
+
+async function safeFetchApi(path, c, params = {}) {
+  try {
+    return await fetchApi(path, c, params);
+  } catch {
+    return null;
+  }
+}
+
+async function getHindiExploreFallback(page, c) {
+  const payload = await getHindiDubbedData(page, false, c, { allowWarmup: false });
+  return {
+    pageInfo: payload?.pageInfo || {
+      currentPage: Math.max(1, toNumber(page, 1)),
+      totalPages: 1,
+      hasNextPage: false,
+    },
+    response: Array.isArray(payload?.response) ? payload.response : [],
+  };
 }
 
 async function getLatestEpisodes(c) {
@@ -190,34 +223,85 @@ export async function getHomeData(c) {
 
   sharedCache.homePromise = (async () => {
     try {
-      const homePayload = await fetchApi('/home', c, { slugNth: 12, includeSlugs: false });
-
-      const featured = pickCollection(homePayload?.featured, homePayload?.spotlight);
-      const currentlyAiring = pickCollection(homePayload?.currentlyAiring, homePayload?.topAiring);
-      const finishedAiring = pickCollection(homePayload?.finishedAiring, homePayload?.latestCompleted);
-      const latestAnime = pickCollection(homePayload?.latestAnime, homePayload?.newAdded);
-      const latestEpisodesRows = pickCollection(homePayload?.latestEpisodes, homePayload?.latestEpisode);
-
-      let trending = pickCollection(homePayload?.trending);
-      let popular = pickCollection(homePayload?.mostPopular);
-      if (!trending.length || !popular.length) {
-        const [trendingResult, popularResult] = await Promise.allSettled([
-          trending.length ? Promise.resolve({ animes: trending }) : fetchApi('/anime/trending', c, { page: 1, limit: 20 }),
-          popular.length ? Promise.resolve({ animes: popular }) : fetchApi('/anime/popular', c, { page: 1, limit: 20 }),
+      const [homePayload, trendingPayload, popularPayload, latestAnimePayload, latestEpisodesPayload] =
+        await Promise.all([
+          safeFetchApi('/home', c, { slugNth: 12, includeSlugs: false }),
+          safeFetchApi('/anime/trending', c, { page: 1, limit: 20 }),
+          safeFetchApi('/anime/popular', c, { page: 1, limit: 20 }),
+          safeFetchApi('/latest/anime', c, { page: 1, limit: 20 }),
+          safeFetchApi('/latest/episode', c, { page: 1, limit: 100 }),
         ]);
-        if (!trending.length && trendingResult.status === 'fulfilled') {
-          trending = pickCollection(trendingResult.value?.animes);
-        }
-        if (!popular.length && popularResult.status === 'fulfilled') {
-          popular = pickCollection(popularResult.value?.animes);
-        }
-      }
+
+      let featured = pickCollection(
+        homePayload?.featured,
+        homePayload?.spotlight,
+        homePayload?.trending,
+        trendingPayload?.animes,
+        popularPayload?.animes,
+        latestAnimePayload?.animes
+      );
+      let currentlyAiring = pickCollection(
+        homePayload?.currentlyAiring,
+        homePayload?.topAiring,
+        trendingPayload?.animes
+      );
+      let finishedAiring = pickCollection(
+        homePayload?.finishedAiring,
+        homePayload?.latestCompleted,
+        popularPayload?.animes
+      );
+      let latestAnime = pickCollection(
+        homePayload?.latestAnime,
+        homePayload?.newAdded,
+        latestAnimePayload?.animes
+      );
+      let latestEpisodesRows = pickCollection(
+        homePayload?.latestEpisodes,
+        homePayload?.latestEpisode,
+        latestEpisodesPayload?.episodes
+      );
+
+      let trending = pickCollection(homePayload?.trending, trendingPayload?.animes);
+      let popular = pickCollection(homePayload?.mostPopular, popularPayload?.animes);
 
       const cachedCatalog = getCachedCatalog(c);
       if (!cachedCatalog) {
         runInBackground(c, () => warmCatalog(c));
       }
       const catalog = cachedCatalog || [];
+
+      if (!trending.length && catalog.length) {
+        trending = [...catalog].sort((a, b) => b.__members - a.__members).slice(0, 20);
+      }
+      if (!popular.length && catalog.length) {
+        popular = [...catalog].sort((a, b) => a.__popularity - b.__popularity).slice(0, 20);
+      }
+
+      if (!featured.length || !trending.length || !popular.length || !latestAnime.length) {
+        const hindiHome = await getHindiDubbedData(1, false, c, { allowWarmup: false }).catch(() => null);
+        const hindiRows = Array.isArray(hindiHome?.response) ? hindiHome.response : [];
+        if (!featured.length) {
+          featured = hindiRows;
+        }
+        if (!trending.length) {
+          trending = hindiRows;
+        }
+        if (!popular.length) {
+          popular = hindiRows;
+        }
+        if (!latestAnime.length) {
+          latestAnime = hindiRows;
+        }
+        if (!currentlyAiring.length) {
+          currentlyAiring = hindiRows;
+        }
+        if (!finishedAiring.length) {
+          finishedAiring = hindiRows;
+        }
+        if (!latestEpisodesRows.length) {
+          latestEpisodesRows = hindiRows;
+        }
+      }
 
       const upcomingFromHome = pickCollection(homePayload?.topUpcoming);
       const favoriteFromHome = pickCollection(homePayload?.mostFavorite);
@@ -249,15 +333,15 @@ export async function getHomeData(c) {
       }
 
       const response = {
-        spotlight: featured
+        spotlight: (featured.length ? featured : trending.length ? trending : popular)
           .map((entry) => unwrapAnimeEntry(entry))
           .filter(Boolean)
           .map((entry, index) => toSpotlightAnime(entry, index + 1)),
         trending: mapRankedRows(trending),
-        topAiring: mapTypedRows(currentlyAiring),
+        topAiring: mapTypedRows(currentlyAiring.length ? currentlyAiring : trending),
         mostPopular: mapTypedRows(popular),
         mostFavorite: mapTypedRows(mostFavorite),
-        latestCompleted: mapTypedRows(finishedAiring),
+        latestCompleted: mapTypedRows(finishedAiring.length ? finishedAiring : popular),
         latestEpisode: mapBasicRows(latestEpisodesRows),
         newAdded: mapBasicRows(latestAnime),
         topUpcoming: mapBasicRows(upcoming),
@@ -340,61 +424,89 @@ export async function getExploreData(query, page, c) {
   }
 
   if (normalized === 'top-airing') {
-    const payload = await fetchApi('/anime/trending', c, { page: pageNum, limit: 100 });
-    const list = payload?.animes || [];
-    return toExplorePageResponse(list, 1);
+    try {
+      const payload = await fetchApi('/anime/trending', c, { page: pageNum, limit: 100 });
+      const list = payload?.animes || [];
+      if (list.length > 0) {
+        return toExplorePageResponse(list, 1);
+      }
+    } catch {
+      // fallback below
+    }
+    return getHindiExploreFallback(pageNum, c);
   }
 
   if (normalized === 'most-popular') {
-    const payload = await fetchApi('/anime/popular', c, { page: pageNum, limit: 20 });
-    return {
-      pageInfo: {
-        currentPage: toNumber(payload?.meta?.page, pageNum),
-        totalPages: Math.max(1, toNumber(payload?.meta?.totalPages, 1)),
-        hasNextPage: toNumber(payload?.meta?.page, pageNum) < toNumber(payload?.meta?.totalPages, 1),
-      },
-      response: (payload?.animes || []).map((anime) => toExploreAnime(anime)),
-    };
+    try {
+      const payload = await fetchApi('/anime/popular', c, { page: pageNum, limit: 20 });
+      if (Array.isArray(payload?.animes) && payload.animes.length > 0) {
+        return {
+          pageInfo: {
+            currentPage: toNumber(payload?.meta?.page, pageNum),
+            totalPages: Math.max(1, toNumber(payload?.meta?.totalPages, 1)),
+            hasNextPage: toNumber(payload?.meta?.page, pageNum) < toNumber(payload?.meta?.totalPages, 1),
+          },
+          response: payload.animes.map((anime) => toExploreAnime(anime)),
+        };
+      }
+    } catch {
+      // fallback below
+    }
+    return getHindiExploreFallback(pageNum, c);
   }
 
   if (normalized === 'recently-added') {
-    const payload = await fetchApi('/latest/anime', c, { page: pageNum, limit: 20 });
-    const totalPages = Math.max(1, toNumber(payload?.totalPages, 1));
-    const currentPage = Math.max(1, toNumber(payload?.page, pageNum));
-    return {
-      pageInfo: {
-        currentPage,
-        totalPages,
-        hasNextPage: currentPage < totalPages,
-      },
-      response: (payload?.animes || []).map((anime) => toExploreAnime(anime)),
-    };
+    try {
+      const payload = await fetchApi('/latest/anime', c, { page: pageNum, limit: 20 });
+      if (Array.isArray(payload?.animes) && payload.animes.length > 0) {
+        const totalPages = Math.max(1, toNumber(payload?.totalPages, 1));
+        const currentPage = Math.max(1, toNumber(payload?.page, pageNum));
+        return {
+          pageInfo: {
+            currentPage,
+            totalPages,
+            hasNextPage: currentPage < totalPages,
+          },
+          response: payload.animes.map((anime) => toExploreAnime(anime)),
+        };
+      }
+    } catch {
+      // fallback below
+    }
+    return getHindiExploreFallback(pageNum, c);
   }
 
   if (normalized === 'recently-updated') {
-    const payload = await fetchApi('/latest/episode', c, { page: pageNum, limit: 100 });
-    const seen = new Set();
-    const mapped = [];
-    for (const episode of payload?.episodes || []) {
-      const anime = unwrapAnimeEntry(episode?.anime_info);
-      const animeId = getAnimeSlug(anime || {});
-      if (!anime || seen.has(animeId)) {
-        continue;
+    try {
+      const payload = await fetchApi('/latest/episode', c, { page: pageNum, limit: 100 });
+      const seen = new Set();
+      const mapped = [];
+      for (const episode of payload?.episodes || []) {
+        const anime = unwrapAnimeEntry(episode?.anime_info || episode?.anime);
+        const animeId = getAnimeSlug(anime || {});
+        if (!anime || seen.has(animeId)) {
+          continue;
+        }
+        seen.add(animeId);
+        mapped.push(toExploreAnime(anime));
+        if (mapped.length >= 20) {
+          break;
+        }
       }
-      seen.add(animeId);
-      mapped.push(toExploreAnime(anime));
-      if (mapped.length >= 20) {
-        break;
+      if (mapped.length > 0) {
+        return {
+          pageInfo: {
+            currentPage: toNumber(payload?.currentPage, pageNum),
+            totalPages: Math.max(1, toNumber(payload?.totalPages, pageNum)),
+            hasNextPage: toNumber(payload?.currentPage, pageNum) < toNumber(payload?.totalPages, pageNum),
+          },
+          response: mapped,
+        };
       }
+    } catch {
+      // fallback below
     }
-    return {
-      pageInfo: {
-        currentPage: toNumber(payload?.currentPage, pageNum),
-        totalPages: Math.max(1, toNumber(payload?.totalPages, pageNum)),
-        hasNextPage: toNumber(payload?.currentPage, pageNum) < toNumber(payload?.totalPages, pageNum),
-      },
-      response: mapped,
-    };
+    return getHindiExploreFallback(pageNum, c);
   }
 
   const catalog = await loadCatalog(c);

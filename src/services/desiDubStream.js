@@ -210,6 +210,7 @@ async function fetchAnimePostBySlug(slug, c) {
 
 function rowMatchesInput(row, input, postIdHint) {
   const safeInput = toSafeString(input).toLowerCase();
+  const safeInputWithoutNumeric = safeInput.replace(/-\d+$/, '');
   if (!safeInput || !row || typeof row !== 'object') return false;
 
   const source = row.mapping?.source || {};
@@ -224,12 +225,14 @@ function rowMatchesInput(row, input, postIdHint) {
   if (streamId && streamId === safeInput) return true;
   if (daniId && daniId === safeInput) return true;
   if (sourceSlug && sourceSlug === safeInput) return true;
+  if (safeInputWithoutNumeric && sourceSlug && sourceSlug === safeInputWithoutNumeric) return true;
 
   return false;
 }
 
 function sourceMatchesInput(source, input, postIdHint) {
   const safeInput = toSafeString(input).toLowerCase();
+  const safeInputWithoutNumeric = safeInput.replace(/-\d+$/, '');
   if (!safeInput || !source || typeof source !== 'object') return false;
 
   const sourcePostId = toNumber(source.postId, 0);
@@ -239,6 +242,7 @@ function sourceMatchesInput(source, input, postIdHint) {
 
   if (postIdHint > 0 && sourcePostId === postIdHint) return true;
   if (sourceSlug && sourceSlug === safeInput) return true;
+  if (safeInputWithoutNumeric && sourceSlug && sourceSlug === safeInputWithoutNumeric) return true;
   if (sourceUrlSlug && sourceUrlSlug === safeInput) return true;
   if (fallbackId && fallbackId === safeInput) return true;
 

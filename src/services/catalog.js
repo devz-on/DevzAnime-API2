@@ -80,7 +80,7 @@ export async function loadCatalog(c) {
 
     while (pages < config.maxCatalogPages) {
       const payload = await fetchApi('/anime', c, {
-        limit: 1000,
+        limit: DEFAULT_PAGE_SIZE,
         cursor: cursor || undefined,
       });
       const rows = Array.isArray(payload?.animes) ? payload.animes : [];
