@@ -1,11 +1,20 @@
-import { NotFoundError } from '../../../utils/errors.js';
-import { getAzListData } from '../../../services/providerContent.js';
+import exploreExtract from '../explore.extract.js';
+import { axiosInstance } from '../../../services/axiosInstance.js';
+import createEndpoint from '../../../utils/createEndpoint.js';
+import { NotFoundError, validationError } from '../../../utils/errors.js';
 
 export default async function azListHandler(c) {
   const { letter } = c.req.valid('param');
   const { page } = c.req.valid('query');
 
-  const response = await getAzListData(letter, page, c);
+  const endpoint = createEndpoint(`az-list/${letter}`, page);
+
+  const result = await axiosInstance(endpoint);
+
+  if (!result.success) {
+    throw new validationError('make sure given endpoint is correct');
+  }
+  const response = exploreExtract(result.data);
 
   if (response.response.length < 1) throw new NotFoundError();
   return response;

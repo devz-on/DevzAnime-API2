@@ -1,63 +1,32 @@
-import { getServersData as getProviderServersData } from '../../services/providerDetails.js';
-import {
-  getHindiServersFallback,
-  isLikelyHindiEpisodeIdentifier,
-  isServersResponseEmpty,
-  shouldFallbackToHindiOnError,
-} from '../../services/hindiFallback.js';
+import config from '../../config/config.js';
+import serversExtract from './servers.extract.js';
+import { NotFoundError } from '../../utils/errors.js';
 
-function toPublicServersPayload(payload) {
-  const publicPayload = { ...(payload || {}) };
-  delete publicPayload._subRaw;
-  delete publicPayload._dubRaw;
-  return publicPayload;
-}
-
-export default async function serversHandler(c) {
+export default async function (c) {
   const { id } = c.req.valid('param');
-  return getServers(id, c);
+
+  const response = await getServers(id);
+
+  return response;
 }
 
-export async function getServers(id, c) {
-  if (isLikelyHindiEpisodeIdentifier(id)) {
-    return await getHindiServersFallback(id, c);
-  }
-
-  const emptyResponse = {
-    episode: 0,
-    sub: [],
-    dub: [],
-  };
+export async function getServers(id) {
+  const episode = id.split('ep=').at(-1);
+  const ajaxUrl = `/ajax/v2/episode/servers?episodeId=${episode}`;
+  // "/ajax/v2/episode/servers?episodeId=${id}"
+  const Referer = `/watch/${id.replace('::', '?')}`;
 
   try {
-    const response = toPublicServersPayload(await getProviderServersData(id, c));
-    if (!isServersResponseEmpty(response)) {
-      return response;
-    }
-
-    try {
-      const fallbackResponse = await getHindiServersFallback(id, c);
-      if (!isServersResponseEmpty(fallbackResponse)) {
-        return fallbackResponse;
-      }
-    } catch {
-      // Keep provider result when Hindi fallback lookup fails.
-    }
-
-    return response || emptyResponse;
-  } catch (error) {
-    if (shouldFallbackToHindiOnError(error)) {
-      try {
-        const fallbackResponse = await getHindiServersFallback(id, c);
-        if (!isServersResponseEmpty(fallbackResponse)) {
-          return fallbackResponse;
-        }
-      } catch {
-        // Keep stable empty payload on fallback errors for non-Hindi ids.
-      }
-
-      return emptyResponse;
-    }
-    throw error;
+    const res = await fetch(config.baseurl + ajaxUrl, {
+      headers: {
+        Referer: config.baseurl + Referer,
+        ...config.headers,
+      },
+    });
+    const data = await res.json();
+    const response = serversExtract(data.html);
+    return response;
+  } catch {
+    throw new NotFoundError('servers not found');
   }
 }

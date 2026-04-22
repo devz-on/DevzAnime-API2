@@ -184,11 +184,7 @@ export function shouldFallbackToHindiOnError(error) {
   }
 
   const statusCode = toNumber(error?.statusCode ?? error?.status, 0);
-  const upstreamStatusCode = toNumber(error?.details?.statusCode ?? error?.details?.status, 0);
   if (statusCode === 404) {
-    return true;
-  }
-  if (upstreamStatusCode === 404) {
     return true;
   }
 
@@ -202,7 +198,6 @@ export function shouldFallbackToHindiOnError(error) {
   }
 
   return (
-    message.includes('upstream failed (404)') ||
     message.includes('not found') ||
     message.includes('no watch episodes found') ||
     message.includes('stream links not found') ||

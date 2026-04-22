@@ -1,5 +1,11 @@
-import { getHomeData } from '../../services/providerContent.js';
+import { axiosInstance } from '../../services/axiosInstance.js';
+import { validationError } from '../../utils/errors.js';
+import homeExtract from './home.extract.js';
 
-export default async function homeHandler(c) {
-  return getHomeData(c);
+export default async function homeHandler() {
+  const result = await axiosInstance('/home');
+  if (!result.success) {
+    throw new validationError(result.message);
+  }
+  return homeExtract(result.data);
 }
