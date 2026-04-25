@@ -1,12 +1,5 @@
 import { createRoute, z } from '@hono/zod-openapi';
 
-const mappingSchema = z.object({
-  mapped: z.boolean(),
-  daniId: z.string().nullable(),
-  method: z.enum(['override', 'exact', 'fuzzy', 'none']),
-  confidence: z.number(),
-});
-
 const detailsSchema = createRoute({
   method: 'get',
   path: '/hindi-dubbed/anime/{id}',
@@ -40,7 +33,6 @@ const detailsSchema = createRoute({
                 slug: z.string(),
                 url: z.string(),
               }),
-              mapping: mappingSchema,
               episodeList: z.array(
                 z.object({
                   id: z.string(),

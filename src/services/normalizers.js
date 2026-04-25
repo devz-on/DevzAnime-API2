@@ -75,10 +75,16 @@ export function getBestAnimeTitle(anime) {
 }
 
 export function getAlternativeTitle(anime) {
-  return toSafeString(anime?.alternateTitle) || toSafeString(anime?.Japanese) || getBestAnimeTitle(anime);
+  return (
+    toSafeString(anime?.alternateTitle) || toSafeString(anime?.Japanese) || getBestAnimeTitle(anime)
+  );
 }
 
 export function getAnimeSlug(anime) {
+  const singleSlug = toSafeString(anime?.slug);
+  if (singleSlug) {
+    return singleSlug;
+  }
   if (Array.isArray(anime?.slugs) && anime.slugs.length > 0) {
     return toSafeString(anime.slugs[0]);
   }

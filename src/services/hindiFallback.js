@@ -225,7 +225,7 @@ export function isStreamResponseEmpty(payload) {
 }
 
 export async function getHindiSearchFallback(keyword, page, c) {
-  const payload = await getHindiDubbedSearchData(keyword, page, false, c, { allowWarmup: false });
+  const payload = await getHindiDubbedSearchData(keyword, page, c, { allowWarmup: false });
   return {
     pageInfo: payload?.pageInfo || {
       currentPage: Math.max(1, toNumber(page, 1)),
@@ -269,7 +269,6 @@ export async function getHindiAnimeInfoFallback(id, c) {
     mostPopular: [],
     recommended: [],
     streamId: toSafeString(details?.streamId),
-    mapping: details?.mapping || null,
     source: details?.source || null,
   };
 }

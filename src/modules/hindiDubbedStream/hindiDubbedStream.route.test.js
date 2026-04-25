@@ -58,7 +58,11 @@ function buildFetchStub() {
       });
     }
 
-    if (url.includes('/wp-admin/admin-ajax.php') && url.includes('action=get_episodes') && url.includes('anime_id=5001')) {
+    if (
+      url.includes('/wp-admin/admin-ajax.php') &&
+      url.includes('action=get_episodes') &&
+      url.includes('anime_id=5001')
+    ) {
       return jsonResponse({
         success: true,
         data: {
@@ -122,7 +126,7 @@ function buildFetchStub() {
       `);
     }
 
-    if (url.includes('https://9animes.cv/api/anime?')) {
+    if (url.includes('/api/anime?')) {
       return jsonResponse({
         animes: [
           {
@@ -165,7 +169,10 @@ test('GET /api/v1/hindi-dubbed/stream returns streams for requested episode', as
   assert.equal(body.data.episode.number, 1);
   assert.equal(body.data.streams.length, 3);
   assert.equal(body.data.streams[0].type, 'dub');
-  assert.equal(body.data.streams.some((stream) => stream.link.file.includes('cloudflareinsights')), false);
+  assert.equal(
+    body.data.streams.some((stream) => stream.link.file.includes('cloudflareinsights')),
+    false
+  );
 });
 
 test('GET /api/v1/hindi-dubbed/stream filters by server', async (t) => {

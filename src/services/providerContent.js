@@ -151,9 +151,15 @@ function runInBackground(c, task) {
   const promise = Promise.resolve()
     .then(task)
     .catch(() => null);
-  const waitUntil = c?.executionCtx?.waitUntil;
+  let executionCtx = null;
+  try {
+    executionCtx = c?.executionCtx || null;
+  } catch {
+    executionCtx = null;
+  }
+  const waitUntil = executionCtx?.waitUntil;
   if (typeof waitUntil === 'function') {
-    waitUntil.call(c.executionCtx, promise);
+    waitUntil.call(executionCtx, promise);
     return;
   }
   void promise;
@@ -177,9 +183,7 @@ async function getLatestEpisodes(c) {
 export async function getHomeData(c) {
   const config = getProviderConfig(c);
   const homeCacheTtlMs = Math.min(300, config.catalogCacheTtlSeconds) * 1000;
-  const cacheValid =
-    sharedCache.homeData &&
-    now() - sharedCache.homeAt < homeCacheTtlMs;
+  const cacheValid = sharedCache.homeData && now() - sharedCache.homeAt < homeCacheTtlMs;
   if (cacheValid) {
     return sharedCache.homeData;
   }
@@ -194,16 +198,26 @@ export async function getHomeData(c) {
 
       const featured = pickCollection(homePayload?.featured, homePayload?.spotlight);
       const currentlyAiring = pickCollection(homePayload?.currentlyAiring, homePayload?.topAiring);
-      const finishedAiring = pickCollection(homePayload?.finishedAiring, homePayload?.latestCompleted);
+      const finishedAiring = pickCollection(
+        homePayload?.finishedAiring,
+        homePayload?.latestCompleted
+      );
       const latestAnime = pickCollection(homePayload?.latestAnime, homePayload?.newAdded);
-      const latestEpisodesRows = pickCollection(homePayload?.latestEpisodes, homePayload?.latestEpisode);
+      const latestEpisodesRows = pickCollection(
+        homePayload?.latestEpisodes,
+        homePayload?.latestEpisode
+      );
 
       let trending = pickCollection(homePayload?.trending);
       let popular = pickCollection(homePayload?.mostPopular);
       if (!trending.length || !popular.length) {
         const [trendingResult, popularResult] = await Promise.allSettled([
-          trending.length ? Promise.resolve({ animes: trending }) : fetchApi('/anime/trending', c, { page: 1, limit: 20 }),
-          popular.length ? Promise.resolve({ animes: popular }) : fetchApi('/anime/popular', c, { page: 1, limit: 20 }),
+          trending.length
+            ? Promise.resolve({ animes: trending })
+            : fetchApi('/anime/trending', c, { page: 1, limit: 20 }),
+          popular.length
+            ? Promise.resolve({ animes: popular })
+            : fetchApi('/anime/popular', c, { page: 1, limit: 20 }),
         ]);
         if (!trending.length && trendingResult.status === 'fulfilled') {
           trending = pickCollection(trendingResult.value?.animes);
@@ -333,7 +347,8 @@ export async function getExploreData(query, page, c) {
       pageInfo: {
         currentPage: toNumber(payload?.meta?.page, pageNum),
         totalPages: Math.max(1, toNumber(payload?.meta?.totalPages, 1)),
-        hasNextPage: toNumber(payload?.meta?.page, pageNum) < toNumber(payload?.meta?.totalPages, 1),
+        hasNextPage:
+          toNumber(payload?.meta?.page, pageNum) < toNumber(payload?.meta?.totalPages, 1),
       },
       response: (payload?.animes || []).map((anime) => toExploreAnime(anime)),
     };
@@ -351,7 +366,8 @@ export async function getExploreData(query, page, c) {
       pageInfo: {
         currentPage: toNumber(payload?.meta?.page, pageNum),
         totalPages: Math.max(1, toNumber(payload?.meta?.totalPages, 1)),
-        hasNextPage: toNumber(payload?.meta?.page, pageNum) < toNumber(payload?.meta?.totalPages, 1),
+        hasNextPage:
+          toNumber(payload?.meta?.page, pageNum) < toNumber(payload?.meta?.totalPages, 1),
       },
       response: (payload?.animes || []).map((anime) => toExploreAnime(anime)),
     };
@@ -391,7 +407,8 @@ export async function getExploreData(query, page, c) {
       pageInfo: {
         currentPage: toNumber(payload?.currentPage, pageNum),
         totalPages: Math.max(1, toNumber(payload?.totalPages, pageNum)),
-        hasNextPage: toNumber(payload?.currentPage, pageNum) < toNumber(payload?.totalPages, pageNum),
+        hasNextPage:
+          toNumber(payload?.currentPage, pageNum) < toNumber(payload?.totalPages, pageNum),
       },
       response: mapped,
     };
@@ -407,7 +424,8 @@ export async function getExploreData(query, page, c) {
   } else if (normalized === 'top-upcoming') {
     list = catalog.filter(
       (entry) =>
-        normalizeText(entry.Status).includes('not yet') || normalizeText(entry.Status).includes('upcoming')
+        normalizeText(entry.Status).includes('not yet') ||
+        normalizeText(entry.Status).includes('upcoming')
     );
   } else if (normalized === 'subbed-anime') {
     list = catalog.filter((entry) => toNumber(entry.totalSubbed || entry.totalSub) > 0);

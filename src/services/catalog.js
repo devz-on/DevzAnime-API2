@@ -38,7 +38,12 @@ function toNormalizedCatalogEntry(anime) {
   const id = getAnimeSlug(anime);
   const titleNorm = normalizeText(title);
   const altNorm = normalizeText(getAlternativeTitle(anime));
-  const slugCandidates = Array.isArray(anime?.slugs) ? anime.slugs.map((slug) => safeNormalizeText(slug)) : [];
+  const slugCandidates = [
+    ...(Array.isArray(anime?.slugs) ? anime.slugs : []),
+    toSafeString(anime?.slug),
+  ]
+    .filter(Boolean)
+    .map((slug) => safeNormalizeText(slug));
   const searchCandidates = [...new Set([titleNorm, altNorm, ...slugCandidates].filter(Boolean))];
   return {
     ...anime,
@@ -63,8 +68,7 @@ function toNormalizedCatalogEntry(anime) {
 export async function loadCatalog(c) {
   const config = getProviderConfig(c);
   const cacheValid =
-    sharedCache.catalog &&
-    now() - sharedCache.catalogAt < config.catalogCacheTtlSeconds * 1000;
+    sharedCache.catalog && now() - sharedCache.catalogAt < config.catalogCacheTtlSeconds * 1000;
   if (cacheValid) {
     return sharedCache.catalog;
   }
@@ -114,8 +118,7 @@ export async function loadCatalog(c) {
 export function getCachedCatalog(c) {
   const config = getProviderConfig(c);
   const cacheValid =
-    sharedCache.catalog &&
-    now() - sharedCache.catalogAt < config.catalogCacheTtlSeconds * 1000;
+    sharedCache.catalog && now() - sharedCache.catalogAt < config.catalogCacheTtlSeconds * 1000;
   return cacheValid ? sharedCache.catalog : null;
 }
 
@@ -131,7 +134,7 @@ export function createSearchCandidates(entry) {
   if (Array.isArray(entry?.__searchCandidates) && entry.__searchCandidates.length > 0) {
     return entry.__searchCandidates;
   }
-  const candidates = [entry.__titleNorm, entry.__altNorm];
+  const candidates = [entry.__titleNorm, entry.__altNorm, safeNormalizeText(entry?.slug)];
   if (Array.isArray(entry?.slugs)) {
     entry.slugs.forEach((slug) => candidates.push(safeNormalizeText(slug)));
   }
@@ -157,9 +160,16 @@ export function pickAnimeByInput(catalog, rawId) {
 
   const fuzzy = catalog.find((entry) => {
     if (entry.__titleNorm === normalized || entry.__altNorm === normalized) return true;
-    if (entry.__titleNorm === normalizedWithoutNumeric || entry.__altNorm === normalizedWithoutNumeric)
+    if (
+      entry.__titleNorm === normalizedWithoutNumeric ||
+      entry.__altNorm === normalizedWithoutNumeric
+    )
       return true;
-    if (Array.isArray(entry?.slugs) && entry.slugs.some((slug) => normalizeText(slug) === normalized))
+    if (safeNormalizeText(entry?.slug) === normalized) return true;
+    if (
+      Array.isArray(entry?.slugs) &&
+      entry.slugs.some((slug) => normalizeText(slug) === normalized)
+    )
       return true;
     return false;
   });
@@ -208,7 +218,10 @@ export async function loadAnimeDetails(inputId, c) {
     throw new NotFoundError('anime id mapping missing');
   }
 
-  const totalEpisodes = Math.max(toNumber(anime?.totalEpisodes, 0), toNumber(catalogEntry?.totalEpisodes, 0));
+  const totalEpisodes = Math.max(
+    toNumber(anime?.totalEpisodes, 0),
+    toNumber(catalogEntry?.totalEpisodes, 0)
+  );
   const episodesPayload = await fetchApi(`/episodes/${encodeURIComponent(animeObjectId)}`, c, {
     start: 0,
     end: totalEpisodes > 0 ? totalEpisodes : 2000,

@@ -30,23 +30,21 @@ export function getRuntimeEnv(c) {
 
 export function getProviderConfig(c) {
   const env = getRuntimeEnv(c);
-  const desiDubSiteBaseUrl = toSafeString(env.DESIDUB_SITE_BASE_URL || 'https://www.desidubanime.me').replace(
-    /\/+$/,
-    ''
-  );
+  const desiDubSiteBaseUrl = toSafeString(
+    env.DESIDUB_SITE_BASE_URL || 'https://www.desidubanime.me'
+  ).replace(/\/+$/, '');
   const desiDubWpApiBaseUrl = toSafeString(
     env.DESIDUB_WP_API_BASE_URL || `${desiDubSiteBaseUrl}/wp-json/wp/v2`
   ).replace(/\/+$/, '');
 
   return {
-    hianimesApiBaseUrl: toSafeString(env.HIANIMES_API_BASE_URL || 'https://9animes.cv/api').replace(
+    hianimesApiBaseUrl: toSafeString(env.HIANIMES_API_BASE_URL || 'https://myani.cfd/api').replace(
       /\/+$/,
       ''
     ),
-    hianimesAjaxBaseUrl: toSafeString(env.HIANIMES_AJAX_BASE_URL || 'https://nine.mewcdn.online').replace(
-      /\/+$/,
-      ''
-    ),
+    hianimesAjaxBaseUrl: toSafeString(
+      env.HIANIMES_AJAX_BASE_URL || 'https://nine.mewcdn.online'
+    ).replace(/\/+$/, ''),
     hianimesReferer: toSafeString(env.HIANIMES_REFERER || 'https://hianimes.se/'),
     m3u8ProxyUrl: toSafeString(env.UPSTREAM_PROXY_M3U8_URL || ''),
     daniProxyUrl: toSafeString(
@@ -119,14 +117,22 @@ async function readText(response) {
   return response.text();
 }
 
-async function fetchJsonWithResponse(targetUrl, c, overrideReferer) {
+function buildCandidateUrls(targetUrl, config, referer, options = {}) {
+  const useProxy = options?.useProxy !== false;
+  const candidates = [targetUrl];
+
+  if (useProxy) {
+    candidates.push(buildProxyUrl(config.m3u8ProxyUrl, targetUrl, referer));
+    candidates.push(buildProxyUrl(config.daniProxyUrl, targetUrl, referer));
+  }
+
+  return candidates.filter(Boolean);
+}
+
+async function fetchJsonWithResponse(targetUrl, c, overrideReferer, options = {}) {
   const config = getProviderConfig(c);
   const referer = overrideReferer || config.hianimesReferer;
-  const candidates = [
-    targetUrl,
-    buildProxyUrl(config.m3u8ProxyUrl, targetUrl, referer),
-    buildProxyUrl(config.daniProxyUrl, targetUrl, referer),
-  ].filter(Boolean);
+  const candidates = buildCandidateUrls(targetUrl, config, referer, options);
 
   let lastError = null;
   for (const candidate of candidates) {
@@ -171,14 +177,10 @@ async function fetchJsonWithResponse(targetUrl, c, overrideReferer) {
   throw lastError || new validationError('failed to fetch upstream data');
 }
 
-async function fetchTextWithResponse(targetUrl, c, overrideReferer) {
+async function fetchTextWithResponse(targetUrl, c, overrideReferer, options = {}) {
   const config = getProviderConfig(c);
   const referer = overrideReferer || config.hianimesReferer;
-  const candidates = [
-    targetUrl,
-    buildProxyUrl(config.m3u8ProxyUrl, targetUrl, referer),
-    buildProxyUrl(config.daniProxyUrl, targetUrl, referer),
-  ].filter(Boolean);
+  const candidates = buildCandidateUrls(targetUrl, config, referer, options);
 
   let lastError = null;
   for (const candidate of candidates) {
@@ -223,13 +225,18 @@ async function fetchTextWithResponse(targetUrl, c, overrideReferer) {
   throw lastError || new validationError('failed to fetch upstream text');
 }
 
-export async function fetchJsonWithFallback(targetUrl, c, overrideReferer) {
-  const result = await fetchJsonWithResponse(targetUrl, c, overrideReferer);
+export async function fetchJsonWithFallback(targetUrl, c, overrideReferer, options = {}) {
+  const result = await fetchJsonWithResponse(targetUrl, c, overrideReferer, options);
   return result.payload;
 }
 
-export async function fetchJsonWithMeta(targetUrl, c, overrideReferer) {
-  const { payload, response, upstreamUrl } = await fetchJsonWithResponse(targetUrl, c, overrideReferer);
+export async function fetchJsonWithMeta(targetUrl, c, overrideReferer, options = {}) {
+  const { payload, response, upstreamUrl } = await fetchJsonWithResponse(
+    targetUrl,
+    c,
+    overrideReferer,
+    options
+  );
   return {
     payload,
     headers: response.headers,
@@ -238,13 +245,18 @@ export async function fetchJsonWithMeta(targetUrl, c, overrideReferer) {
   };
 }
 
-export async function fetchTextWithFallback(targetUrl, c, overrideReferer) {
-  const result = await fetchTextWithResponse(targetUrl, c, overrideReferer);
+export async function fetchTextWithFallback(targetUrl, c, overrideReferer, options = {}) {
+  const result = await fetchTextWithResponse(targetUrl, c, overrideReferer, options);
   return result.text;
 }
 
-export async function fetchTextWithMeta(targetUrl, c, overrideReferer) {
-  const { text, response, upstreamUrl } = await fetchTextWithResponse(targetUrl, c, overrideReferer);
+export async function fetchTextWithMeta(targetUrl, c, overrideReferer, options = {}) {
+  const { text, response, upstreamUrl } = await fetchTextWithResponse(
+    targetUrl,
+    c,
+    overrideReferer,
+    options
+  );
   return {
     text,
     headers: response.headers,
@@ -257,14 +269,14 @@ export async function fetchApi(path, c, params = {}) {
   const config = getProviderConfig(c);
   const cleanedPath = path.startsWith('/') ? path : `/${path}`;
   const targetUrl = buildUrlWithParams(`${config.hianimesApiBaseUrl}${cleanedPath}`, params);
-  return fetchJsonWithFallback(targetUrl, c, config.hianimesReferer);
+  return fetchJsonWithFallback(targetUrl, c, config.hianimesReferer, { useProxy: false });
 }
 
 export async function fetchJikan(path, c, params = {}) {
   const config = getProviderConfig(c);
   const cleanedPath = path.startsWith('/') ? path : `/${path}`;
   const targetUrl = buildUrlWithParams(`${config.jikanApiBaseUrl}${cleanedPath}`, params);
-  return fetchJsonWithFallback(targetUrl, c, 'https://myanimelist.net/');
+  return fetchJsonWithFallback(targetUrl, c, 'https://myanimelist.net/', { useProxy: false });
 }
 
 export async function probeUrl(url) {

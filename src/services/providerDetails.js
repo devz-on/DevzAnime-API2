@@ -1,10 +1,5 @@
 import { NotFoundError, validationError } from '../utils/errors.js';
-import {
-  loadAnimeDetails,
-  loadCatalog,
-  resolveEpisode,
-  toLegacyEpisodeId,
-} from './catalog.js';
+import { loadAnimeDetails, loadCatalog, resolveEpisode, toLegacyEpisodeId } from './catalog.js';
 import {
   extractNumericSuffix,
   isLikelyDirectMediaUrl,
@@ -17,7 +12,14 @@ import {
   toNumber,
   toSafeString,
 } from './normalizers.js';
-import { buildProxyUrl, fetchJikan, fetchJsonWithFallback, getProviderConfig, probeUrl } from './upstream.js';
+import {
+  buildProxyUrl,
+  fetchJikan,
+  fetchJsonWithFallback,
+  fetchTextWithFallback,
+  getProviderConfig,
+  probeUrl,
+} from './upstream.js';
 
 function buildServerItems(urls, type) {
   const list = Array.isArray(urls) ? urls : [];
@@ -156,6 +158,46 @@ function parseRapidCloudSourceRequestUrl(url) {
   }
 }
 
+function extractDataIdFromHtml(html) {
+  const body = toSafeString(html);
+  if (!body) {
+    return '';
+  }
+  return toSafeString(body.match(/\bdata-id\s*=\s*["']([^"']+)["']/i)?.[1]);
+}
+
+function extractCandidateOriginsFromHtml(html, fallbackOrigin) {
+  const body = toSafeString(html);
+  const preferredUrls = Array.from(body.matchAll(/https?:\/\/[^"'\\s<>]+/gi))
+    .map((match) => toSafeString(match[0]))
+    .filter((value) =>
+      /(stream|getsources|player|embed|vid|cloud|wish|rapid|megaplay|animeplay)/i.test(value)
+    );
+
+  const origins = [];
+  const seen = new Set();
+  const addOrigin = (value) => {
+    const input = toSafeString(value);
+    if (!input) {
+      return;
+    }
+    try {
+      const origin = new URL(input).origin;
+      if (seen.has(origin)) {
+        return;
+      }
+      seen.add(origin);
+      origins.push(origin);
+    } catch {
+      // Ignore malformed URL candidate.
+    }
+  };
+
+  addOrigin(fallbackOrigin);
+  preferredUrls.forEach((url) => addOrigin(url));
+  return origins.slice(0, 8);
+}
+
 function extractStreamFileFromSources(sources) {
   if (Array.isArray(sources)) {
     const first = sources.find((item) => item && typeof item.file === 'string');
@@ -206,7 +248,13 @@ function normalizeStreamWindow(rawWindow) {
   };
 }
 
-async function resolveEmbeddedStreamDataFromNineAjax(selectedUrl, selectedName, normalizedType, id, c) {
+async function resolveEmbeddedStreamDataFromNineAjax(
+  selectedUrl,
+  selectedName,
+  normalizedType,
+  id,
+  c
+) {
   const embedded = parseEmbeddedStreamUrl(selectedUrl);
   if (!embedded) {
     return null;
@@ -243,7 +291,11 @@ async function resolveEmbeddedStreamDataFromNineAjax(selectedUrl, selectedName, 
           continue;
         }
 
-        const rapidPayload = await fetchJsonWithFallback(rapidRequest.getSourcesUrl, c, rapidRequest.referer);
+        const rapidPayload = await fetchJsonWithFallback(
+          rapidRequest.getSourcesUrl,
+          c,
+          rapidRequest.referer
+        );
         const sourceFile = extractStreamFileFromSources(rapidPayload?.sources);
         if (!sourceFile) {
           continue;
@@ -278,7 +330,67 @@ async function resolveEmbeddedStreamDataFromNineAjax(selectedUrl, selectedName, 
   return null;
 }
 
-async function resolveEmbeddedStreamDataFromLegacyGetSources(selectedUrl, selectedName, normalizedType, id, c) {
+async function resolveEmbeddedStreamDataFromHtmlDataId(
+  selectedUrl,
+  selectedName,
+  normalizedType,
+  id,
+  c
+) {
+  const embedded = parseEmbeddedStreamUrl(selectedUrl);
+  if (!embedded) {
+    return null;
+  }
+
+  try {
+    const html = await fetchTextWithFallback(selectedUrl, c, embedded.referer);
+    const dataId = extractDataIdFromHtml(html);
+    if (!dataId) {
+      return null;
+    }
+
+    const candidateOrigins = extractCandidateOriginsFromHtml(html, embedded.origin);
+    for (const origin of candidateOrigins) {
+      const getSourcesUrl = `${origin}/stream/getSources?id=${encodeURIComponent(dataId)}`;
+      try {
+        const payload = await fetchJsonWithFallback(getSourcesUrl, c, selectedUrl);
+        const sourceFile = extractStreamFileFromSources(payload?.sources);
+        if (!sourceFile) {
+          continue;
+        }
+        return [
+          {
+            id,
+            type: normalizedType,
+            link: {
+              file: sourceFile,
+              type: mediaTypeForUrl(sourceFile),
+            },
+            tracks: normalizeTracks(payload?.tracks),
+            intro: normalizeStreamWindow(payload?.intro),
+            outro: normalizeStreamWindow(payload?.outro),
+            server: selectedName,
+            referer: `${origin}/`,
+          },
+        ];
+      } catch {
+        // Try next source origin candidate.
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+async function resolveEmbeddedStreamDataFromLegacyGetSources(
+  selectedUrl,
+  selectedName,
+  normalizedType,
+  id,
+  c
+) {
   const embedded = parseEmbeddedStreamUrl(selectedUrl);
   if (!embedded) {
     return null;
@@ -325,7 +437,24 @@ async function resolveEmbeddedStreamData(selectedUrl, selectedName, normalizedTy
     return resolvedFromNineAjax;
   }
 
-  return resolveEmbeddedStreamDataFromLegacyGetSources(selectedUrl, selectedName, normalizedType, id, c);
+  const resolvedFromHtmlDataId = await resolveEmbeddedStreamDataFromHtmlDataId(
+    selectedUrl,
+    selectedName,
+    normalizedType,
+    id,
+    c
+  );
+  if (resolvedFromHtmlDataId) {
+    return resolvedFromHtmlDataId;
+  }
+
+  return resolveEmbeddedStreamDataFromLegacyGetSources(
+    selectedUrl,
+    selectedName,
+    normalizedType,
+    id,
+    c
+  );
 }
 
 export async function getAnimeInfoData(id, c) {
@@ -382,7 +511,9 @@ export async function getEpisodesData(id, c) {
   const { anime, episodes } = await loadAnimeDetails(id, c);
   return episodes.map((episode, index) => ({
     title: toSafeString(episode?.title || `Episode ${episode?.episodeNumber || index + 1}`),
-    alternativeTitle: toSafeString(episode?.title || `Episode ${episode?.episodeNumber || index + 1}`),
+    alternativeTitle: toSafeString(
+      episode?.title || `Episode ${episode?.episodeNumber || index + 1}`
+    ),
     id: toLegacyEpisodeId(anime.__id, episode),
     isFiller: false,
     episodeNumber: toNumber(episode?.episodeNumber, index + 1),
@@ -458,11 +589,22 @@ export async function getStreamData(id, serverName, type, c) {
     return resolvedStream;
   }
 
-  throw new validationError('unable to resolve stream to direct media source', {
-    id,
-    server: selected.name,
-    type: normalizedType,
-  });
+  return [
+    {
+      id,
+      type: normalizedType,
+      link: {
+        file: selectedUrlRaw,
+        type: 'text/html',
+      },
+      tracks: [],
+      intro: { start: 0, end: 0 },
+      outro: { start: 0, end: 0 },
+      server: selected.name,
+      referer: getProviderConfig(c).hianimesReferer,
+      isDirect: false,
+    },
+  ];
 }
 
 export async function getCharactersData(id, page, c) {
@@ -531,7 +673,8 @@ export async function getCharacterData(id, c) {
     type: 'Character',
     japanese: toSafeString(character?.name_kanji),
     imageUrl:
-      toSafeString(character?.images?.jpg?.image_url) || toSafeString(character?.images?.webp?.image_url),
+      toSafeString(character?.images?.jpg?.image_url) ||
+      toSafeString(character?.images?.webp?.image_url),
     bio: toSafeString(character?.about),
     animeApearances: animeAppearances.map((entry) => {
       const anime = entry?.anime || {};

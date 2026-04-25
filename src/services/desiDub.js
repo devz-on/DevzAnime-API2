@@ -1,8 +1,6 @@
-import { getCachedCatalog, loadCatalog, warmCatalog } from './catalog.js';
-import { toExploreAnime } from './normalizers.js';
 import { toNumber, toSafeString } from './normalizers.js';
 import { fetchJsonWithMeta, getProviderConfig } from './upstream.js';
-import { buildDesiFallbackId, decodeHtmlEntities, getCatalogMatcherIndex, resolveDesiDubMapping } from './desiDubMapper.js';
+import { buildDesiFallbackId, decodeHtmlEntities } from './desiDubMapper.js';
 import { validationError } from '../utils/errors.js';
 
 const PAGE_SIZE = 20;
@@ -122,9 +120,7 @@ async function resolveHindiTagId(c) {
     return config.desiDubTagId;
   }
 
-  const cacheValid =
-    cache.tagId &&
-    now() - cache.tagAt < config.desiDubCacheTtlSeconds * 1000;
+  const cacheValid = cache.tagId && now() - cache.tagAt < config.desiDubCacheTtlSeconds * 1000;
   if (cacheValid) {
     return cache.tagId;
   }
@@ -134,7 +130,9 @@ async function resolveHindiTagId(c) {
     per_page: '1',
   });
   const endpoint = `${config.desiDubWpApiBaseUrl}/tags?${query.toString()}`;
-  const { payload } = await fetchJsonWithMeta(endpoint, c, config.desiDubSiteBaseUrl);
+  const { payload } = await fetchJsonWithMeta(endpoint, c, config.desiDubSiteBaseUrl, {
+    useProxy: false,
+  });
   const first = Array.isArray(payload) ? payload[0] : null;
   const parsedTagId = toNumber(first?.id, 0);
   const resolvedTagId = parsedTagId > 0 ? parsedTagId : FALLBACK_HINDI_TAG_ID;
@@ -164,7 +162,9 @@ async function fetchHindiDubPage(page, c) {
   });
 
   const endpoint = `${config.desiDubWpApiBaseUrl}/anime?${query.toString()}`;
-  const { payload, headers } = await fetchJsonWithMeta(endpoint, c, config.desiDubSiteBaseUrl);
+  const { payload, headers } = await fetchJsonWithMeta(endpoint, c, config.desiDubSiteBaseUrl, {
+    useProxy: false,
+  });
   if (!Array.isArray(payload)) {
     throw new validationError('desidub anime payload is invalid');
   }
@@ -211,7 +211,9 @@ async function fetchHindiDubSearchPage(keyword, page, c) {
     _fields: WP_ANIME_FIELDS,
   });
   const endpoint = `${config.desiDubWpApiBaseUrl}/anime?${query.toString()}`;
-  const { payload, headers } = await fetchJsonWithMeta(endpoint, c, config.desiDubSiteBaseUrl);
+  const { payload, headers } = await fetchJsonWithMeta(endpoint, c, config.desiDubSiteBaseUrl, {
+    useProxy: false,
+  });
   if (!Array.isArray(payload)) {
     throw new validationError('desidub search payload is invalid');
   }
@@ -233,32 +235,7 @@ async function fetchHindiDubSearchPage(keyword, page, c) {
   return value;
 }
 
-function toMappingDetails(source, mapping) {
-  return {
-    mapped: Boolean(mapping?.mapped),
-    daniId: mapping?.daniId || null,
-    method: mapping?.method || 'none',
-    confidence: toNumber(mapping?.confidence, 0),
-    source: {
-      postId: toNumber(source?.postId, 0),
-      slug: toSafeString(source?.slug),
-      url: toSafeString(source?.url),
-    },
-  };
-}
-
-function toMappedExploreItem(source, mapping) {
-  const mappedAnime = toExploreAnime(mapping.entry);
-  const streamId = buildDesiFallbackId(source);
-  return {
-    ...mappedAnime,
-    poster: source.poster || mappedAnime.poster,
-    streamId,
-    mapping: toMappingDetails(source, mapping),
-  };
-}
-
-function toUnmappedExploreItem(source, mapping) {
+function toHindiExploreItem(source) {
   const fallbackId = buildDesiFallbackId(source);
   const safeTitle = source.title || source.slug || 'Unknown';
   return {
@@ -270,189 +247,35 @@ function toUnmappedExploreItem(source, mapping) {
     episodes: { ...UNKNOWN_EPISODES },
     type: source.type || 'TV',
     duration: source.duration || 'N/A',
-    mapping: toMappingDetails(source, mapping),
   };
 }
 
-function toBoolean(value) {
-  if (typeof value === 'boolean') return value;
-  const normalized = toSafeString(value).toLowerCase();
-  return normalized === '1' || normalized === 'true' || normalized === 'yes';
+function toResponseRows(rows) {
+  return rows.map((row) => normalizeDesiAnimeRow(row)).map((source) => toHindiExploreItem(source));
 }
 
-function hasExecutionContext(c) {
-  try {
-    return Boolean(c?.executionCtx);
-  } catch {
-    return false;
-  }
-}
-
-function isLikelyWorkerRuntime(c) {
-  if (hasExecutionContext(c)) {
-    return true;
-  }
-
-  const hasWebSocketPair = typeof WebSocketPair !== 'undefined';
-  const hasEdgeCache =
-    typeof globalThis !== 'undefined' &&
-    globalThis?.caches &&
-    typeof globalThis.caches === 'object' &&
-    Boolean(globalThis.caches.default);
-
-  return hasWebSocketPair && hasEdgeCache;
-}
-
-function scheduleCatalogWarmup(c) {
-  const warmupPromise = warmCatalog(c);
-  let waitUntil = null;
-  let executionCtx = null;
-  try {
-    executionCtx = c?.executionCtx;
-    waitUntil = executionCtx?.waitUntil;
-  } catch {
-    waitUntil = null;
-    executionCtx = null;
-  }
-  if (typeof waitUntil === 'function') {
-    try {
-      waitUntil.call(executionCtx, warmupPromise);
-      return;
-    } catch {
-      // Some runtimes/test contexts expose waitUntil but do not provide ExecutionContext.
-    }
-  }
-  warmupPromise.catch(() => {
-    // Best-effort warmup only.
-  });
-}
-
-function toUnmappedRows(rows, mappedOnlyFlag) {
-  if (mappedOnlyFlag) {
-    return [];
-  }
-
-  return rows
-    .map((row) => normalizeDesiAnimeRow(row))
-    .map((source) =>
-      toUnmappedExploreItem(source, {
-        mapped: false,
-        daniId: null,
-        method: 'none',
-        confidence: 0,
-      })
-    );
-}
-
-function mapRowsToExplore(rows, mappedOnlyFlag, catalog, matcherIndex) {
-  const mappedRows = rows
-    .map((row) => normalizeDesiAnimeRow(row))
-    .map((source) => {
-      const mapping = resolveDesiDubMapping(source, catalog, matcherIndex);
-      if (mapping?.mapped && mapping?.entry) {
-        return toMappedExploreItem(source, mapping);
-      }
-      return toUnmappedExploreItem(source, mapping);
-    });
-
-  return mappedOnlyFlag
-    ? mappedRows.filter((row) => row?.mapping?.mapped)
-    : mappedRows;
-}
-
-export async function getHindiDubbedData(page, mappedOnly, c, options = {}) {
+export async function getHindiDubbedData(page, c, options = {}) {
   const safePage = Math.max(1, toNumber(page, 1));
-  const mappedOnlyFlag = toBoolean(mappedOnly);
-  const allowWarmup = options?.allowWarmup !== false;
-  const workerRuntime = isLikelyWorkerRuntime(c);
-  const workerCtxAvailable = hasExecutionContext(c);
+  void options;
 
   const sourcePage = await fetchHindiDubPage(safePage, c);
-  let catalog = getCachedCatalog(c);
-
-  if (!catalog) {
-    if (workerRuntime && !mappedOnlyFlag) {
-      if (allowWarmup && workerCtxAvailable) {
-        scheduleCatalogWarmup(c);
-      }
-      return {
-        pageInfo: sourcePage.pageInfo,
-        response: toUnmappedRows(sourcePage.rows, mappedOnlyFlag),
-      };
-    }
-
-    if (allowWarmup && workerCtxAvailable && !mappedOnlyFlag) {
-      scheduleCatalogWarmup(c);
-    } else {
-      try {
-        catalog = await loadCatalog(c);
-      } catch {
-        catalog = null;
-      }
-    }
-  }
-
-  if (!catalog) {
-    return {
-      pageInfo: sourcePage.pageInfo,
-      response: toUnmappedRows(sourcePage.rows, mappedOnlyFlag),
-    };
-  }
-
-  const matcherIndex = getCatalogMatcherIndex(catalog);
-  const filteredRows = mapRowsToExplore(sourcePage.rows, mappedOnlyFlag, catalog, matcherIndex);
-
   return {
     pageInfo: sourcePage.pageInfo,
-    response: filteredRows,
+    response: toResponseRows(sourcePage.rows),
   };
 }
 
-export async function getHindiDubbedSearchData(keyword, page, mappedOnly, c, options = {}) {
+export async function getHindiDubbedSearchData(keyword, page, c, options = {}) {
   const safePage = Math.max(1, toNumber(page, 1));
-  const mappedOnlyFlag = toBoolean(mappedOnly);
-  const allowWarmup = options?.allowWarmup !== false;
-  const workerRuntime = isLikelyWorkerRuntime(c);
-  const workerCtxAvailable = hasExecutionContext(c);
+  void options;
   const safeKeyword = toSafeString(keyword).replaceAll('+', ' ');
   if (!safeKeyword) {
     throw new validationError('search keyword is required');
   }
 
   const searchPage = await fetchHindiDubSearchPage(safeKeyword, safePage, c);
-  let catalog = getCachedCatalog(c);
-
-  if (!catalog) {
-    if (workerRuntime && !mappedOnlyFlag) {
-      return {
-        pageInfo: searchPage.pageInfo,
-        response: toUnmappedRows(searchPage.rows, mappedOnlyFlag),
-      };
-    }
-
-    if (allowWarmup && workerCtxAvailable && !mappedOnlyFlag) {
-      scheduleCatalogWarmup(c);
-    } else {
-      try {
-        catalog = await loadCatalog(c);
-      } catch {
-        catalog = null;
-      }
-    }
-  }
-
-  if (!catalog) {
-    return {
-      pageInfo: searchPage.pageInfo,
-      response: toUnmappedRows(searchPage.rows, mappedOnlyFlag),
-    };
-  }
-
-  const matcherIndex = getCatalogMatcherIndex(catalog);
-  const filteredRows = mapRowsToExplore(searchPage.rows, mappedOnlyFlag, catalog, matcherIndex);
-
   return {
     pageInfo: searchPage.pageInfo,
-    response: filteredRows,
+    response: toResponseRows(searchPage.rows),
   };
 }

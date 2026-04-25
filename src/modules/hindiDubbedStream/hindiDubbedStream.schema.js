@@ -33,10 +33,7 @@ const hindiDubbedStreamSchema = createRoute({
   path: '/hindi-dubbed/stream',
   request: {
     query: z.object({
-      id: z
-        .string()
-        .min(1)
-        .openapi({ example: 'desidub-5001-attack-on-titan-season-1' }),
+      id: z.string().min(1).openapi({ example: 'desidub-5001-attack-on-titan-season-1' }),
       episode: z.coerce.number().optional().openapi({ example: 1 }),
       server: z.string().optional().openapi({ example: 'mirrordub' }),
     }),
@@ -55,12 +52,6 @@ const hindiDubbedStreamSchema = createRoute({
                 postId: z.number(),
                 slug: z.string(),
                 url: z.string(),
-                mapping: z.object({
-                  mapped: z.boolean(),
-                  daniId: z.string().nullable(),
-                  method: z.enum(['override', 'exact', 'fuzzy', 'none']),
-                  confidence: z.number(),
-                }),
               }),
               episode: z.object({
                 id: z.string(),

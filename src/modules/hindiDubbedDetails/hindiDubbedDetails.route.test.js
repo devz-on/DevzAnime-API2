@@ -58,7 +58,11 @@ function buildFetchStub() {
       });
     }
 
-    if (url.includes('/wp-admin/admin-ajax.php') && url.includes('action=get_episodes') && url.includes('anime_id=5001')) {
+    if (
+      url.includes('/wp-admin/admin-ajax.php') &&
+      url.includes('action=get_episodes') &&
+      url.includes('anime_id=5001')
+    ) {
       return jsonResponse({
         success: true,
         data: {
@@ -100,7 +104,7 @@ function buildFetchStub() {
       `);
     }
 
-    if (url.includes('https://9animes.cv/api/anime?')) {
+    if (url.includes('/api/anime?')) {
       return jsonResponse({
         animes: [
           {
@@ -139,7 +143,7 @@ test('GET /api/v1/hindi-dubbed/anime/{id} returns hindi details and episode list
   const body = await response.json();
 
   assert.equal(body.success, true);
-  assert.equal(body.data.id, 'attack-on-titan-16498');
+  assert.equal(body.data.id, 'desidub-5001-attack-on-titan-season-1');
   assert.equal(body.data.streamId, 'desidub-5001-attack-on-titan-season-1');
   assert.equal(body.data.source.postId, 5001);
   assert.equal(body.data.episodeList.length, 2);

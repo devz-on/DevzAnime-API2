@@ -36,26 +36,31 @@ test('GET /api/v1/search keeps normal source when data exists', async (t) => {
       throw new Error('unexpected desidub call');
     }
 
-    if (url.includes('https://9animes.cv/api/anime?')) {
-      return jsonResponse({
-        animes: [
-          {
-            _id: '101',
-            title: 'Naruto',
-            English: 'Naruto',
-            Japanese: 'Naruto',
-            image: 'https://cdn.example.com/naruto.jpg',
-            totalSubbed: 220,
-            totalDubbed: 220,
-            totalEpisodes: 220,
-            Type: 'TV',
-            Duration: '24m',
-            slugs: ['naruto-101'],
-          },
-        ],
-        hasNextPage: false,
-        nextCursor: null,
-      });
+    if (url.includes('https://aniwatchtv.to/search?keyword=naruto')) {
+      return textResponse(`
+        <div class="block_area-content block_area-list film_list">
+          <div class="film_list-wrap">
+            <div class="flw-item">
+              <div class="film-poster">
+                <img class="film-poster-img" data-src="https://cdn.example.com/naruto.jpg" />
+                <div class="tick">
+                  <span class="tick-sub">220</span>
+                  <span class="tick-dub">220</span>
+                </div>
+              </div>
+              <div class="film-detail">
+                <h3 class="film-name">
+                  <a class="dynamic-name" href="/naruto-101" data-jname="Naruto">Naruto</a>
+                </h3>
+                <div class="fd-infor">
+                  <span class="fdi-item">TV</span>
+                  <span class="fdi-duration">24m</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `);
     }
 
     throw new Error(`Unhandled fetch in test: ${url}`);
@@ -83,7 +88,11 @@ test('GET /api/v1/search falls back to hindi-dubbed when normal search is empty'
       return jsonResponse([{ id: 74, slug: 'hindi' }]);
     }
 
-    if (url.includes('/wp-json/wp/v2/anime') && url.includes('tags=74') && url.includes('search=hindi-only')) {
+    if (
+      url.includes('/wp-json/wp/v2/anime') &&
+      url.includes('tags=74') &&
+      url.includes('search=hindi-only')
+    ) {
       return jsonResponse(
         [
           {
@@ -119,26 +128,8 @@ test('GET /api/v1/search falls back to hindi-dubbed when normal search is empty'
       );
     }
 
-    if (url.includes('https://9animes.cv/api/anime?')) {
-      return jsonResponse({
-        animes: [
-          {
-            _id: '202',
-            title: 'Some Other Anime',
-            English: 'Some Other Anime',
-            Japanese: 'Some Other Anime',
-            image: 'https://cdn.example.com/other.jpg',
-            totalSubbed: 12,
-            totalDubbed: 0,
-            totalEpisodes: 12,
-            Type: 'TV',
-            Duration: '24m',
-            slugs: ['some-other-anime-202'],
-          },
-        ],
-        hasNextPage: false,
-        nextCursor: null,
-      });
+    if (url.includes('https://aniwatchtv.to/search?keyword=hindi-only')) {
+      return textResponse('<div class="no-results">No anime found</div>');
     }
 
     throw new Error(`Unhandled fetch in test: ${url}`);
@@ -187,7 +178,11 @@ test('GET /api/v1/stream falls back to hindi stream for hindi episode ids', asyn
       });
     }
 
-    if (url.includes('/wp-admin/admin-ajax.php') && url.includes('action=get_episodes') && url.includes('anime_id=5001')) {
+    if (
+      url.includes('/wp-admin/admin-ajax.php') &&
+      url.includes('action=get_episodes') &&
+      url.includes('anime_id=5001')
+    ) {
       return jsonResponse({
         success: true,
         data: {
@@ -262,5 +257,8 @@ test('GET /api/v1/stream falls back to hindi stream for hindi episode ids', asyn
   const slugEpisodeBody = await slugEpisodeResponse.json();
   assert.equal(slugEpisodeBody.success, true);
   assert.equal(slugEpisodeBody.data[0].id, 'desidub-ep-5001-1');
-  assert.equal(slugEpisodeBody.data.some((stream) => stream.link.file.includes('episode-2')), false);
+  assert.equal(
+    slugEpisodeBody.data.some((stream) => stream.link.file.includes('episode-2')),
+    false
+  );
 });

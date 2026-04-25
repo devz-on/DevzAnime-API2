@@ -29,7 +29,11 @@ function buildFetchStub() {
       ]);
     }
 
-    if (url.includes('/wp-json/wp/v2/anime') && url.includes('tags=74') && url.includes('search=attack')) {
+    if (
+      url.includes('/wp-json/wp/v2/anime') &&
+      url.includes('tags=74') &&
+      url.includes('search=attack')
+    ) {
       return jsonResponse(
         [
           {
@@ -88,7 +92,7 @@ function buildFetchStub() {
       );
     }
 
-    if (url.includes('https://9animes.cv/api/anime?')) {
+    if (url.includes('/api/anime?')) {
       return jsonResponse({
         animes: [
           {
@@ -114,42 +118,22 @@ function buildFetchStub() {
   };
 }
 
-test('GET /api/v1/hindi-dubbed/search returns mapped and unmapped results', async (t) => {
-  globalThis.fetch = buildFetchStub();
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  const response = await app.request('http://localhost/api/v1/hindi-dubbed/search?keyword=attack&page=1');
-  assert.equal(response.status, 200);
-  const body = await response.json();
-
-  assert.equal(body.success, true);
-  assert.equal(body.data.pageInfo.currentPage, 1);
-  assert.equal(body.data.response.length, 2);
-
-  const mapped = body.data.response.find((item) => item.mapping?.mapped);
-  const unmapped = body.data.response.find((item) => !item.mapping?.mapped);
-  assert.ok(mapped);
-  assert.ok(unmapped);
-  assert.equal(mapped.id, 'attack-on-titan-16498');
-  assert.equal(typeof mapped.streamId, 'string');
-  assert.equal(unmapped.mapping.daniId, null);
-});
-
-test('GET /api/v1/hindi-dubbed/search with mappedOnly=true filters unmapped', async (t) => {
+test('GET /api/v1/hindi-dubbed/search returns Hindi dubbed results without mapping payload', async (t) => {
   globalThis.fetch = buildFetchStub();
   t.after(() => {
     globalThis.fetch = originalFetch;
   });
 
   const response = await app.request(
-    'http://localhost/api/v1/hindi-dubbed/search?keyword=attack&page=1&mappedOnly=true'
+    'http://localhost/api/v1/hindi-dubbed/search?keyword=attack&page=1'
   );
   assert.equal(response.status, 200);
   const body = await response.json();
 
   assert.equal(body.success, true);
-  assert.equal(body.data.response.length, 1);
-  assert.equal(body.data.response[0].mapping.mapped, true);
+  assert.equal(body.data.pageInfo.currentPage, 1);
+  assert.equal(body.data.response.length, 2);
+  assert.equal(body.data.response[0].id, 'desidub-5001-attack-on-titan-season-1');
+  assert.equal(body.data.response[0].streamId, 'desidub-5001-attack-on-titan-season-1');
+  assert.equal(Object.hasOwn(body.data.response[0], 'mapping'), false);
 });

@@ -1,17 +1,16 @@
 import { load } from 'cheerio';
 import { NotFoundError, validationError } from '../utils/errors.js';
-import { getCachedCatalog, loadCatalog } from './catalog.js';
-import { getHindiDubbedData, getHindiDubbedSearchData, normalizeDesiAnimeRow } from './desiDub.js';
+import { normalizeDesiAnimeRow } from './desiDub.js';
+import { buildDesiFallbackId, decodeHtmlEntities } from './desiDubMapper.js';
 import {
-  buildDesiFallbackId,
-  decodeHtmlEntities,
-  getCatalogMatcherIndex,
-  resolveDesiDubMapping,
-} from './desiDubMapper.js';
-import { isLikelyDirectMediaUrl, mediaTypeForUrl, slugify, toNumber, toSafeString } from './normalizers.js';
+  isLikelyDirectMediaUrl,
+  mediaTypeForUrl,
+  slugify,
+  toNumber,
+  toSafeString,
+} from './normalizers.js';
 import { fetchJsonWithMeta, fetchTextWithFallback, getProviderConfig } from './upstream.js';
 
-const MAX_LOOKUP_PAGES = 6;
 const MAX_SEARCH_HINTS = 2;
 const MAX_AJAX_EPISODE_PAGES = 40;
 const MAX_EMBED_RESOLVE_ATTEMPTS = 3;
@@ -20,27 +19,6 @@ const EPISODE_CACHE_TTL_MS = 5 * 60 * 1000;
 const EPISODE_CACHE_MAX_ENTRIES = 200;
 const episodeCache = new Map();
 const episodeCacheInFlight = new Map();
-
-function hasExecutionContext(c) {
-  try {
-    return Boolean(c?.executionCtx);
-  } catch {
-    return false;
-  }
-}
-
-function isLikelyWorkerRuntime(c) {
-  if (hasExecutionContext(c)) {
-    return true;
-  }
-  const hasWebSocketPair = typeof WebSocketPair !== 'undefined';
-  const hasEdgeCache =
-    typeof globalThis !== 'undefined' &&
-    globalThis?.caches &&
-    typeof globalThis.caches === 'object' &&
-    Boolean(globalThis.caches.default);
-  return hasWebSocketPair && hasEdgeCache;
-}
 
 function decodeBase64(value) {
   const input = toSafeString(value);
@@ -183,7 +161,9 @@ async function fetchAnimePostById(postId, c) {
   const config = getProviderConfig(c);
   const endpoint = `${config.desiDubWpApiBaseUrl}/anime/${postId}?_embed=1`;
   try {
-    const { payload } = await fetchJsonWithMeta(endpoint, c, config.desiDubSiteBaseUrl);
+    const { payload } = await fetchJsonWithMeta(endpoint, c, config.desiDubSiteBaseUrl, {
+      useProxy: false,
+    });
     return payload && typeof payload === 'object' ? payload : null;
   } catch (error) {
     if (error?.statusCode === 404) {
@@ -203,46 +183,11 @@ async function fetchAnimePostBySlug(slug, c) {
     _embed: '1',
   });
   const endpoint = `${config.desiDubWpApiBaseUrl}/anime?${query.toString()}`;
-  const { payload } = await fetchJsonWithMeta(endpoint, c, config.desiDubSiteBaseUrl);
+  const { payload } = await fetchJsonWithMeta(endpoint, c, config.desiDubSiteBaseUrl, {
+    useProxy: false,
+  });
   if (!Array.isArray(payload) || !payload[0]) return null;
   return payload[0];
-}
-
-function rowMatchesInput(row, input, postIdHint) {
-  const safeInput = toSafeString(input).toLowerCase();
-  if (!safeInput || !row || typeof row !== 'object') return false;
-
-  const source = row.mapping?.source || {};
-  const sourcePostId = toNumber(source.postId, 0);
-  const sourceSlug = toSafeString(source.slug).toLowerCase();
-  const rowId = toSafeString(row.id).toLowerCase();
-  const streamId = toSafeString(row.streamId).toLowerCase();
-  const daniId = toSafeString(row.mapping?.daniId).toLowerCase();
-
-  if (postIdHint > 0 && sourcePostId === postIdHint) return true;
-  if (rowId && rowId === safeInput) return true;
-  if (streamId && streamId === safeInput) return true;
-  if (daniId && daniId === safeInput) return true;
-  if (sourceSlug && sourceSlug === safeInput) return true;
-
-  return false;
-}
-
-function sourceMatchesInput(source, input, postIdHint) {
-  const safeInput = toSafeString(input).toLowerCase();
-  if (!safeInput || !source || typeof source !== 'object') return false;
-
-  const sourcePostId = toNumber(source.postId, 0);
-  const sourceSlug = toSafeString(source.slug).toLowerCase();
-  const fallbackId = toSafeString(buildDesiFallbackId(source)).toLowerCase();
-  const sourceUrlSlug = parseInputSlug(source.url).toLowerCase();
-
-  if (postIdHint > 0 && sourcePostId === postIdHint) return true;
-  if (sourceSlug && sourceSlug === safeInput) return true;
-  if (sourceUrlSlug && sourceUrlSlug === safeInput) return true;
-  if (fallbackId && fallbackId === safeInput) return true;
-
-  return false;
 }
 
 function buildLookupKeywords(input) {
@@ -260,90 +205,25 @@ function buildLookupKeywords(input) {
   return dedupeBy([fromSlug, fromRaw], (value) => value).filter((value) => value.length >= 3);
 }
 
-async function fetchAnimePostFromRow(row, c) {
-  if (!row || typeof row !== 'object') {
+async function fetchAnimePostBySearchKeyword(keyword, c) {
+  const safeKeyword = toSafeString(keyword);
+  if (!safeKeyword) {
     return null;
   }
-
-  const fallbackPostId = parseFallbackPostId(row.streamId || row.id);
-  if (fallbackPostId > 0) {
-    const byFallbackId = await fetchAnimePostById(fallbackPostId, c);
-    if (byFallbackId) return byFallbackId;
+  const config = getProviderConfig(c);
+  const query = new URLSearchParams({
+    search: safeKeyword,
+    per_page: '5',
+    _embed: '1',
+  });
+  const endpoint = `${config.desiDubWpApiBaseUrl}/anime?${query.toString()}`;
+  const { payload } = await fetchJsonWithMeta(endpoint, c, config.desiDubSiteBaseUrl, {
+    useProxy: false,
+  });
+  if (!Array.isArray(payload) || payload.length < 1) {
+    return null;
   }
-
-  if (row?.mapping?.source?.postId) {
-    const byPostId = await fetchAnimePostById(toNumber(row.mapping.source.postId, 0), c);
-    if (byPostId) return byPostId;
-  }
-
-  if (row?.mapping?.source?.slug) {
-    const bySlug = await fetchAnimePostBySlug(row.mapping.source.slug, c);
-    if (bySlug) return bySlug;
-  }
-
-  return null;
-}
-
-async function findMatchingHindiRowBySearch(input, c) {
-  const postIdHint = parseFallbackPostId(input) || parseNumericPostId(input);
-  const normalizedInput = toSafeString(input).toLowerCase();
-  const lookupKeywords = buildLookupKeywords(input).slice(0, MAX_SEARCH_HINTS);
-
-  for (const keyword of lookupKeywords) {
-    let payload = null;
-    try {
-      payload = await getHindiDubbedSearchData(keyword, 1, false, c, { allowWarmup: false });
-    } catch {
-      payload = null;
-    }
-    if (!payload) continue;
-
-    const rows = Array.isArray(payload?.response) ? payload.response : [];
-    const directMatch = rows.find((row) => rowMatchesInput(row, input, postIdHint));
-    if (directMatch) {
-      return directMatch;
-    }
-
-    const mappedMatch = rows.find(
-      (row) => toSafeString(row?.mapping?.daniId).toLowerCase() === normalizedInput
-    );
-    if (mappedMatch) {
-      return mappedMatch;
-    }
-  }
-
-  return null;
-}
-
-async function findMatchingHindiRow(input, c) {
-  const postIdHint = parseFallbackPostId(input) || parseNumericPostId(input);
-  const firstPage = await getHindiDubbedData(1, false, c, { allowWarmup: false });
-  const firstRows = Array.isArray(firstPage?.response) ? firstPage.response : [];
-  const firstMatch = firstRows.find(
-    (row) =>
-      rowMatchesInput(row, input, postIdHint) ||
-      sourceMatchesInput(row?.mapping?.source, input, postIdHint)
-  );
-  if (firstMatch) return firstMatch;
-
-  const totalPages = Math.min(
-    Math.max(1, toNumber(firstPage?.pageInfo?.totalPages, 1)),
-    MAX_LOOKUP_PAGES
-  );
-  for (let page = 2; page <= totalPages; page += 1) {
-    const payload = await getHindiDubbedData(page, false, c, { allowWarmup: false });
-    const rows = Array.isArray(payload?.response) ? payload.response : [];
-    const match = rows.find(
-      (row) =>
-        rowMatchesInput(row, input, postIdHint) ||
-        sourceMatchesInput(row?.mapping?.source, input, postIdHint)
-    );
-    if (match) {
-      return match;
-    }
-  }
-
-  return null;
+  return payload[0];
 }
 
 export async function resolveAnimePostByInput(input, c) {
@@ -365,15 +245,9 @@ export async function resolveAnimePostByInput(input, c) {
     if (post) return post;
   }
 
-  const searchMatch = await findMatchingHindiRowBySearch(input, c);
-  if (searchMatch) {
-    const post = await fetchAnimePostFromRow(searchMatch, c);
-    if (post) return post;
-  }
-
-  const matchingRow = await findMatchingHindiRow(input, c);
-  if (matchingRow) {
-    const post = await fetchAnimePostFromRow(matchingRow, c);
+  const lookupKeywords = buildLookupKeywords(input).slice(0, MAX_SEARCH_HINTS);
+  for (const keyword of lookupKeywords) {
+    const post = await fetchAnimePostBySearchKeyword(keyword, c);
     if (post) return post;
   }
 
@@ -553,9 +427,9 @@ function parseDirectMediaUrlsFromText(html, baseUrl) {
     return [];
   }
 
-  const matches = [...body.matchAll(/https?:\/\/[^'"\\\s<>]+(?:\.m3u8|\.mp4|\.mkv|\.webm|\.mpd)[^'"\\\s<>]*/gi)].map(
-    (match) => toAbsoluteUrl(match[0], baseUrl)
-  );
+  const matches = [
+    ...body.matchAll(/https?:\/\/[^'"\\\s<>]+(?:\.m3u8|\.mp4|\.mkv|\.webm|\.mpd)[^'"\\\s<>]*/gi),
+  ].map((match) => toAbsoluteUrl(match[0], baseUrl));
   return dedupeBy(matches.filter(Boolean), (item) => item);
 }
 
@@ -565,7 +439,7 @@ function canResolveEmbedToDirect(url) {
 }
 
 async function resolveEmbedToDirectUrls(embedUrl, referer, c) {
-  const html = await fetchTextWithFallback(embedUrl, c, referer);
+  const html = await fetchTextWithFallback(embedUrl, c, referer, { useProxy: false });
   return parseDirectMediaUrlsFromText(html, embedUrl);
 }
 
@@ -604,7 +478,12 @@ async function buildPlayableStreams(streams, referer, c) {
     }
     try {
       const host = new URL(rawUrl).hostname.toLowerCase();
-      if (host === 'short.icu' || host.endsWith('.short.icu') || host === 'ouo.io' || host.endsWith('.ouo.io')) {
+      if (
+        host === 'short.icu' ||
+        host.endsWith('.short.icu') ||
+        host === 'ouo.io' ||
+        host.endsWith('.ouo.io')
+      ) {
         continue;
       }
     } catch {
@@ -635,7 +514,9 @@ async function buildPlayableStreams(streams, referer, c) {
     });
   }
 
-  return dedupeBy(output, (stream) => stream.url).sort((left, right) => streamPriority(right) - streamPriority(left));
+  return dedupeBy(output, (stream) => stream.url).sort(
+    (left, right) => streamPriority(right) - streamPriority(left)
+  );
 }
 
 function parseStreamsFromWatchHtml(html, watchUrl) {
@@ -700,24 +581,6 @@ function filterStreamsByServer(streams, server) {
   return streams.filter((stream) => normalizeServerName(stream.server) === safeServer);
 }
 
-function toMappingInfo(mapping) {
-  return {
-    mapped: Boolean(mapping?.mapped),
-    daniId: mapping?.daniId || null,
-    method: mapping?.method || 'none',
-    confidence: toNumber(mapping?.confidence, 0),
-  };
-}
-
-function getUnmappedMapping() {
-  return {
-    mapped: false,
-    daniId: null,
-    method: 'none',
-    confidence: 0,
-  };
-}
-
 function toEpisodeId(postId, episodeNumber) {
   const safePostId = toNumber(postId, 0) || 'unknown';
   const safeEpisode = Math.max(1, toNumber(episodeNumber, 1));
@@ -778,7 +641,9 @@ async function fetchAnimeEpisodesViaAjax(postId, c) {
       order: 'desc',
     });
     const endpoint = `${config.desiDubSiteBaseUrl}/wp-admin/admin-ajax.php?${query.toString()}`;
-    const { payload } = await fetchJsonWithMeta(endpoint, c, config.desiDubSiteBaseUrl);
+    const { payload } = await fetchJsonWithMeta(endpoint, c, config.desiDubSiteBaseUrl, {
+      useProxy: false,
+    });
 
     if (!payload || typeof payload !== 'object' || payload?.success === false) {
       break;
@@ -828,7 +693,9 @@ async function loadEpisodesForAnime(source, c) {
     }
 
     const config = getProviderConfig(c);
-    const animeHtml = await fetchTextWithFallback(source.url, c, config.desiDubSiteBaseUrl);
+    const animeHtml = await fetchTextWithFallback(source.url, c, config.desiDubSiteBaseUrl, {
+      useProxy: false,
+    });
     const parsed = parseAnimeEpisodesFromHtml(animeHtml, source.url);
     writeCachedEpisodes(cacheKey, parsed);
     return parsed;
@@ -907,25 +774,16 @@ export async function getHindiDubbedAnimeDetailsData(id, c) {
   }
 
   const episodes = await loadEpisodesForAnime(source, c);
-  const workerRuntime = isLikelyWorkerRuntime(c);
-  const cachedCatalog = getCachedCatalog(c);
-  const mappingCatalog =
-    cachedCatalog || (!workerRuntime ? await loadCatalog(c) : null);
-  const mapping = mappingCatalog
-    ? resolveDesiDubMapping(source, mappingCatalog, getCatalogMatcherIndex(mappingCatalog))
-    : getUnmappedMapping();
   const streamId = buildDesiFallbackId(source);
   const episodeCount = episodes.length;
 
   const synopsis =
-    stripHtml(animePost?.content?.rendered) ||
-    stripHtml(animePost?.excerpt?.rendered) ||
-    '';
+    stripHtml(animePost?.content?.rendered) || stripHtml(animePost?.excerpt?.rendered) || '';
 
   return {
     title: source.title || source.slug || 'Unknown',
     alternativeTitle: source.title || source.slug || 'Unknown',
-    id: mapping?.mapped ? mapping.daniId : streamId,
+    id: streamId,
     streamId,
     poster: source.poster,
     episodes: {
@@ -941,7 +799,6 @@ export async function getHindiDubbedAnimeDetailsData(id, c) {
       slug: source.slug,
       url: source.url,
     },
-    mapping: toMappingInfo(mapping),
     episodeList: episodes.map((episode) => ({
       id: toEpisodeId(source.postId, episode.number),
       episodeNumber: toNumber(episode.number, 0),
@@ -974,7 +831,14 @@ export async function getHindiDubbedStreamData(id, episode, server, c) {
 
   const quickWatchUrl = buildWatchEpisodeUrl(source, requestedEpisode, config.desiDubSiteBaseUrl);
   if (quickWatchUrl) {
-    const quickWatchHtml = await fetchTextWithFallback(quickWatchUrl, c, config.desiDubSiteBaseUrl).catch(() => '');
+    const quickWatchHtml = await fetchTextWithFallback(
+      quickWatchUrl,
+      c,
+      config.desiDubSiteBaseUrl,
+      {
+        useProxy: false,
+      }
+    ).catch(() => '');
     if (quickWatchHtml) {
       const quickParsedStreams = parseStreamsFromWatchHtml(quickWatchHtml, quickWatchUrl);
       if (quickParsedStreams.length > 0) {
@@ -992,7 +856,9 @@ export async function getHindiDubbedStreamData(id, episode, server, c) {
   if (!selectedEpisode?.url) {
     episodes = await loadEpisodesForAnime(source, c);
     selectedEpisode = pickEpisode(episodes, episode);
-    watchHtml = await fetchTextWithFallback(selectedEpisode.url, c, config.desiDubSiteBaseUrl);
+    watchHtml = await fetchTextWithFallback(selectedEpisode.url, c, config.desiDubSiteBaseUrl, {
+      useProxy: false,
+    });
   }
 
   const parsedStreams = parseStreamsFromWatchHtml(watchHtml, selectedEpisode.url);
@@ -1003,22 +869,17 @@ export async function getHindiDubbedStreamData(id, episode, server, c) {
     throw new NotFoundError('stream links not found for requested episode/server');
   }
 
-  const cachedCatalog = getCachedCatalog(c);
-  const mapping = cachedCatalog
-    ? resolveDesiDubMapping(source, cachedCatalog, getCatalogMatcherIndex(cachedCatalog))
-    : getUnmappedMapping();
   const streamId = buildDesiFallbackId(source);
   const episodeId = toEpisodeId(source.postId, selectedEpisode.number);
 
   return {
     anime: {
-      id: mapping?.mapped ? mapping.daniId : streamId,
+      id: streamId,
       streamId,
       title: source.title,
       postId: source.postId,
       slug: source.slug,
       url: source.url,
-      mapping: toMappingInfo(mapping),
     },
     episode: {
       id: episodeId,

@@ -15,6 +15,16 @@ function jsonResponse(payload, { status = 200, headers = {} } = {}) {
   });
 }
 
+function textResponse(payload, { status = 200, headers = {} } = {}) {
+  return new Response(payload, {
+    status,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      ...headers,
+    },
+  });
+}
+
 function buildFetchStub() {
   return async (input) => {
     const url = typeof input === 'string' ? input : input?.url || '';
@@ -91,7 +101,26 @@ function buildFetchStub() {
       );
     }
 
-    if (url.includes('https://9animes.cv/api/anime?')) {
+    if (url.includes('/api/anime/trending')) {
+      return jsonResponse({
+        animes: [
+          {
+            _id: '12345',
+            title: 'Attack on Titan',
+            English: 'Attack on Titan',
+            image: 'https://cdn.example.com/aot-hianime.jpg',
+            totalSubbed: 25,
+            totalDubbed: 25,
+            totalEpisodes: 25,
+            Type: 'TV',
+            Duration: '24m',
+            slugs: ['attack-on-titan-16498'],
+          },
+        ],
+      });
+    }
+
+    if (url.includes('/api/anime?')) {
       return jsonResponse({
         animes: [
           {
@@ -113,30 +142,38 @@ function buildFetchStub() {
       });
     }
 
-    if (url.includes('https://9animes.cv/api/anime/trending')) {
-      return jsonResponse({
-        animes: [
-          {
-            _id: '12345',
-            title: 'Attack on Titan',
-            English: 'Attack on Titan',
-            image: 'https://cdn.example.com/aot-hianime.jpg',
-            totalSubbed: 25,
-            totalDubbed: 25,
-            totalEpisodes: 25,
-            Type: 'TV',
-            Duration: '24m',
-            slugs: ['attack-on-titan-16498'],
-          },
-        ],
-      });
+    if (url.includes('https://aniwatchtv.to/top-airing')) {
+      return textResponse(`
+        <div class="block_area-content block_area-list film_list">
+          <div class="film_list-wrap">
+            <div class="flw-item">
+              <div class="film-poster">
+                <img class="film-poster-img" data-src="https://cdn.example.com/aot-hianime.jpg" />
+                <div class="tick">
+                  <span class="tick-sub">25</span>
+                  <span class="tick-dub">25</span>
+                </div>
+              </div>
+              <div class="film-detail">
+                <h3 class="film-name">
+                  <a class="dynamic-name" href="/attack-on-titan-16498" data-jname="Shingeki no Kyojin">Attack on Titan</a>
+                </h3>
+                <div class="fd-infor">
+                  <span class="fdi-item">TV</span>
+                  <span class="fdi-duration">24m</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `);
     }
 
     throw new Error(`Unhandled fetch in test: ${url}`);
   };
 }
 
-test('GET /api/v1/hindi-dubbed returns mapped and unmapped rows', async (t) => {
+test('GET /api/v1/hindi-dubbed returns Hindi dubbed rows without mapping payload', async (t) => {
   globalThis.fetch = buildFetchStub();
   t.after(() => {
     globalThis.fetch = originalFetch;
@@ -149,30 +186,10 @@ test('GET /api/v1/hindi-dubbed returns mapped and unmapped rows', async (t) => {
   assert.equal(body.success, true);
   assert.equal(body.data.pageInfo.currentPage, 1);
   assert.equal(body.data.response.length, 2);
-
-  const mapped = body.data.response.find((item) => item.mapping?.mapped);
-  const unmapped = body.data.response.find((item) => !item.mapping?.mapped);
-  assert.ok(mapped);
-  assert.ok(unmapped);
-  assert.equal(mapped.id, 'attack-on-titan-16498');
-  assert.equal(typeof mapped.streamId, 'string');
-  assert.equal(unmapped.mapping.daniId, null);
-  assert.equal(unmapped.id, unmapped.streamId);
-});
-
-test('GET /api/v1/hindi-dubbed with mappedOnly=true filters unmapped rows', async (t) => {
-  globalThis.fetch = buildFetchStub();
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  const response = await app.request('http://localhost/api/v1/hindi-dubbed?page=1&mappedOnly=true');
-  assert.equal(response.status, 200);
-  const body = await response.json();
-
-  assert.equal(body.success, true);
-  assert.equal(body.data.response.length, 1);
-  assert.equal(body.data.response[0].mapping.mapped, true);
+  assert.equal(body.data.response[0].id, 'desidub-5001-attack-on-titan-season-1');
+  assert.equal(body.data.response[0].streamId, 'desidub-5001-attack-on-titan-season-1');
+  assert.equal(body.data.response[1].title, 'Invincible - Season 4');
+  assert.equal(Object.hasOwn(body.data.response[0], 'mapping'), false);
 });
 
 test('catch-all explore route still works for /api/v1/top-airing', async (t) => {

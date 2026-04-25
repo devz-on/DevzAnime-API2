@@ -362,6 +362,8 @@ export async function proxyHandler(c) {
     { referer: targetOriginReferer, includeOrigin: false },
     { referer: 'https://hianimes.se/', includeOrigin: true },
     { referer: 'https://hianimes.se/', includeOrigin: false },
+    { referer: 'https://myani.cfd/', includeOrigin: true },
+    { referer: 'https://myani.cfd/', includeOrigin: false },
     { referer: 'https://9animes.cv/', includeOrigin: true },
     { referer: 'https://9animes.cv/', includeOrigin: false },
     { referer: 'https://hianime.to/', includeOrigin: true },
