@@ -1,23 +1,6 @@
-import { validationError } from '../../utils/errors.js';
-import config from '../../config/config.js';
-import suggestionExtract from './suggestion.extract.js';
+import { getSuggestionData } from '../../services/providerContent.js';
 
 export default async function suggestionHandler(c) {
   const { keyword } = c.req.valid('query');
-
-  const endpoint = `/ajax/search/suggest?keyword=${keyword}`;
-  const Referer = `${config.baseurl}/home`;
-  const res = await fetch(config.baseurl + endpoint, {
-    headers: {
-      Referer,
-      ...config.headers,
-    },
-  });
-
-  const data = await res.json();
-  if (!data.status) throw new validationError('suggestion not found');
-
-  const response = suggestionExtract(data.html);
-
-  return response;
+  return getSuggestionData(keyword, c);
 }

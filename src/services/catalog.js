@@ -158,6 +158,15 @@ export function pickAnimeByInput(catalog, rawId) {
   const exactWithoutNumeric = catalog.find((entry) => entry.__id === withoutTrailingNumeric);
   if (exactWithoutNumeric) return exactWithoutNumeric;
 
+  const trailingNumericMatch = decoded.match(/-(\d+)$/);
+  const trailingNumeric = toNumber(trailingNumericMatch?.[1], 0);
+  if (trailingNumeric > 0) {
+    const byMalId = catalog.find((entry) => toNumber(entry?.mal_id, 0) === trailingNumeric);
+    if (byMalId) {
+      return byMalId;
+    }
+  }
+
   const fuzzy = catalog.find((entry) => {
     if (entry.__titleNorm === normalized || entry.__altNorm === normalized) return true;
     if (
@@ -206,7 +215,18 @@ export async function loadAnimeDetails(inputId, c) {
   }
 
   const catalog = await loadCatalog(c);
-  const catalogEntry = pickAnimeByInput(catalog, inputId);
+  let catalogEntry = pickAnimeByInput(catalog, inputId);
+  if (!catalogEntry) {
+    catalogEntry = await findCatalogEntryByDeepScan(inputId, c, config);
+    if (catalogEntry && Array.isArray(sharedCache.catalog)) {
+      const exists = sharedCache.catalog.some(
+        (entry) => entry.__id === catalogEntry.__id || entry._id === catalogEntry._id
+      );
+      if (!exists) {
+        sharedCache.catalog.push(catalogEntry);
+      }
+    }
+  }
   if (!catalogEntry) {
     throw new NotFoundError('anime not found');
   }
@@ -269,6 +289,37 @@ export async function resolveEpisode(rawEpisodeId, c) {
   }
 
   return { anime, episode: found };
+}
+
+async function findCatalogEntryByDeepScan(inputId, c, config) {
+  const maxPages = Math.max(config?.maxCatalogPages || 0, 30);
+  let cursor = null;
+  let pages = 0;
+
+  while (pages < maxPages) {
+    const payload = await fetchApi('/anime', c, {
+      limit: 1000,
+      cursor: cursor || undefined,
+    });
+    const rows = Array.isArray(payload?.animes) ? payload.animes : [];
+    if (rows.length < 1) {
+      break;
+    }
+
+    const normalizedRows = rows.map(toNormalizedCatalogEntry);
+    const match = pickAnimeByInput(normalizedRows, inputId);
+    if (match) {
+      return match;
+    }
+
+    pages += 1;
+    if (!payload?.hasNextPage || !payload?.nextCursor) {
+      break;
+    }
+    cursor = payload.nextCursor;
+  }
+
+  return null;
 }
 
 export function paginateExplore(animes, page, toExploreAnime) {

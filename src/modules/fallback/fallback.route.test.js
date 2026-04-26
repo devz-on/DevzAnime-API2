@@ -36,31 +36,26 @@ test('GET /api/v1/search keeps normal source when data exists', async (t) => {
       throw new Error('unexpected desidub call');
     }
 
-    if (url.includes('https://aniwatchtv.to/search?keyword=naruto')) {
-      return textResponse(`
-        <div class="block_area-content block_area-list film_list">
-          <div class="film_list-wrap">
-            <div class="flw-item">
-              <div class="film-poster">
-                <img class="film-poster-img" data-src="https://cdn.example.com/naruto.jpg" />
-                <div class="tick">
-                  <span class="tick-sub">220</span>
-                  <span class="tick-dub">220</span>
-                </div>
-              </div>
-              <div class="film-detail">
-                <h3 class="film-name">
-                  <a class="dynamic-name" href="/naruto-101" data-jname="Naruto">Naruto</a>
-                </h3>
-                <div class="fd-infor">
-                  <span class="fdi-item">TV</span>
-                  <span class="fdi-duration">24m</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      `);
+    if (url.includes('https://myani.cfd/api/anime?')) {
+      return jsonResponse({
+        animes: [
+          {
+            _id: '101',
+            slug: 'naruto-101',
+            title: 'Naruto',
+            English: 'Naruto',
+            Japanese: 'Naruto',
+            image: 'https://cdn.example.com/naruto.jpg',
+            totalSub: 220,
+            totalDub: 220,
+            totalEpisodes: 220,
+            Type: 'TV',
+            Duration: '24m',
+          },
+        ],
+        hasNextPage: false,
+        nextCursor: null,
+      });
     }
 
     throw new Error(`Unhandled fetch in test: ${url}`);
@@ -128,8 +123,26 @@ test('GET /api/v1/search falls back to hindi-dubbed when normal search is empty'
       );
     }
 
-    if (url.includes('https://aniwatchtv.to/search?keyword=hindi-only')) {
-      return textResponse('<div class="no-results">No anime found</div>');
+    if (url.includes('https://myani.cfd/api/anime?')) {
+      return jsonResponse({
+        animes: [
+          {
+            _id: '200',
+            slug: 'bleach-200',
+            title: 'Bleach',
+            English: 'Bleach',
+            Japanese: 'Bleach',
+            image: 'https://cdn.example.com/bleach.jpg',
+            totalSub: 366,
+            totalDub: 366,
+            totalEpisodes: 366,
+            Type: 'TV',
+            Duration: '24m',
+          },
+        ],
+        hasNextPage: false,
+        nextCursor: null,
+      });
     }
 
     throw new Error(`Unhandled fetch in test: ${url}`);

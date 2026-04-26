@@ -142,6 +142,31 @@ function buildFetchStub() {
       });
     }
 
+    if (url.includes('/api/latest/episode')) {
+      return jsonResponse({
+        currentPage: 1,
+        totalPages: 3,
+        episodes: [
+          {
+            episodeNumber: 1,
+            anime_info: {
+              _id: '12345',
+              slug: 'attack-on-titan-16498',
+              title: 'Attack on Titan',
+              English: 'Attack on Titan',
+              Japanese: 'Shingeki no Kyojin',
+              image: 'https://cdn.example.com/aot-hianime.jpg',
+              totalSubbed: 25,
+              totalDubbed: 25,
+              totalEpisodes: 25,
+              Type: 'TV',
+              Duration: '24m',
+            },
+          },
+        ],
+      });
+    }
+
     if (url.includes('https://aniwatchtv.to/top-airing')) {
       return textResponse(`
         <div class="block_area-content block_area-list film_list">
@@ -202,5 +227,19 @@ test('catch-all explore route still works for /api/v1/top-airing', async (t) => 
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.success, true);
+  assert.ok(Array.isArray(body.data.response));
+});
+
+test('catch-all explore route still works for /api/v1/recently-updated', async (t) => {
+  globalThis.fetch = buildFetchStub();
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const response = await app.request('http://localhost/api/v1/recently-updated?page=1');
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.success, true);
+  assert.equal(body.data.pageInfo.currentPage, 1);
   assert.ok(Array.isArray(body.data.response));
 });
