@@ -23,6 +23,12 @@ import {
   unwrapAnimeEntry,
 } from './normalizers.js';
 import { fetchApi, getProviderConfig } from './upstream.js';
+import {
+  getHianimeWebExploreData,
+  getHianimeWebHomeData,
+  getHianimeWebSearchData,
+  getHianimeWebSuggestionData,
+} from './hianimeWeb.js';
 
 const sharedCache = {
   homeData: null,
@@ -295,11 +301,14 @@ export async function getHomeData(c) {
       sharedCache.homeData = response;
       sharedCache.homeAt = now();
       return response;
-    } catch (error) {
+    } catch {
       if (sharedCache.homeData) {
         return sharedCache.homeData;
       }
-      throw error;
+      const fallbackHome = await getHianimeWebHomeData(c);
+      sharedCache.homeData = fallbackHome;
+      sharedCache.homeAt = now();
+      return fallbackHome;
     } finally {
       sharedCache.homePromise = null;
     }
@@ -319,121 +328,136 @@ export async function getTopTenData(c) {
 }
 
 export async function getSearchData(keyword, page, c) {
-  const catalog = await loadCatalog(c);
-  const normalizedKeyword = normalizeText(keyword);
-  return getCatalogSearchPage(catalog, normalizedKeyword, page);
+  try {
+    const catalog = await loadCatalog(c);
+    const normalizedKeyword = normalizeText(keyword);
+    return getCatalogSearchPage(catalog, normalizedKeyword, page);
+  } catch {
+    return getHianimeWebSearchData(keyword, page, c);
+  }
 }
 
 export async function getSuggestionData(keyword, c) {
-  const search = await getSearchData(keyword, 1, c);
-  return search.response.slice(0, 12).map((entry) => ({
-    title: entry.title,
-    alternativeTitle: entry.alternativeTitle,
-    id: entry.id,
-    poster: entry.poster,
-    aired: '',
-    type: entry.type,
-    duration: entry.duration,
-  }));
+  try {
+    const search = await getSearchData(keyword, 1, c);
+    return search.response.slice(0, 12).map((entry) => ({
+      title: entry.title,
+      alternativeTitle: entry.alternativeTitle,
+      id: entry.id,
+      poster: entry.poster,
+      aired: '',
+      type: entry.type,
+      duration: entry.duration,
+    }));
+  } catch {
+    return getHianimeWebSuggestionData(keyword, c);
+  }
 }
 
 export async function getExploreData(query, page, c) {
   const normalized = toSafeString(query).toLowerCase();
   const pageNum = Math.max(1, toNumber(page, 1));
-
-  if (['movie', 'tv', 'ova', 'ona', 'special'].includes(normalized)) {
-    const payload = await fetchApi('/category', c, { type: normalized, page: pageNum, limit: 20 });
-    return {
-      pageInfo: {
-        currentPage: toNumber(payload?.meta?.page, pageNum),
-        totalPages: Math.max(1, toNumber(payload?.meta?.totalPages, 1)),
-        hasNextPage:
-          toNumber(payload?.meta?.page, pageNum) < toNumber(payload?.meta?.totalPages, 1),
-      },
-      response: (payload?.animes || []).map((anime) => toExploreAnime(anime)),
-    };
-  }
-
-  if (normalized === 'top-airing') {
-    const payload = await fetchApi('/anime/trending', c, { page: pageNum, limit: 100 });
-    const list = payload?.animes || [];
-    return toExplorePageResponse(list, 1);
-  }
-
-  if (normalized === 'most-popular') {
-    const payload = await fetchApi('/anime/popular', c, { page: pageNum, limit: 20 });
-    return {
-      pageInfo: {
-        currentPage: toNumber(payload?.meta?.page, pageNum),
-        totalPages: Math.max(1, toNumber(payload?.meta?.totalPages, 1)),
-        hasNextPage:
-          toNumber(payload?.meta?.page, pageNum) < toNumber(payload?.meta?.totalPages, 1),
-      },
-      response: (payload?.animes || []).map((anime) => toExploreAnime(anime)),
-    };
-  }
-
-  if (normalized === 'recently-added') {
-    const payload = await fetchApi('/latest/anime', c, { page: pageNum, limit: 20 });
-    const totalPages = Math.max(1, toNumber(payload?.totalPages, 1));
-    const currentPage = Math.max(1, toNumber(payload?.page, pageNum));
-    return {
-      pageInfo: {
-        currentPage,
-        totalPages,
-        hasNextPage: currentPage < totalPages,
-      },
-      response: (payload?.animes || []).map((anime) => toExploreAnime(anime)),
-    };
-  }
-
-  if (normalized === 'recently-updated') {
-    const payload = await fetchApi('/latest/episode', c, { page: pageNum, limit: 100 });
-    const seen = new Set();
-    const mapped = [];
-    for (const episode of payload?.episodes || []) {
-      const anime = unwrapAnimeEntry(episode?.anime_info);
-      const animeId = getAnimeSlug(anime || {});
-      if (!anime || seen.has(animeId)) {
-        continue;
-      }
-      seen.add(animeId);
-      mapped.push(toExploreAnime(anime));
-      if (mapped.length >= 20) {
-        break;
-      }
+  try {
+    if (['movie', 'tv', 'ova', 'ona', 'special'].includes(normalized)) {
+      const payload = await fetchApi('/category', c, {
+        type: normalized,
+        page: pageNum,
+        limit: 20,
+      });
+      return {
+        pageInfo: {
+          currentPage: toNumber(payload?.meta?.page, pageNum),
+          totalPages: Math.max(1, toNumber(payload?.meta?.totalPages, 1)),
+          hasNextPage:
+            toNumber(payload?.meta?.page, pageNum) < toNumber(payload?.meta?.totalPages, 1),
+        },
+        response: (payload?.animes || []).map((anime) => toExploreAnime(anime)),
+      };
     }
-    return {
-      pageInfo: {
-        currentPage: toNumber(payload?.currentPage, pageNum),
-        totalPages: Math.max(1, toNumber(payload?.totalPages, pageNum)),
-        hasNextPage:
-          toNumber(payload?.currentPage, pageNum) < toNumber(payload?.totalPages, pageNum),
-      },
-      response: mapped,
-    };
+
+    if (normalized === 'top-airing') {
+      const payload = await fetchApi('/anime/trending', c, { page: pageNum, limit: 100 });
+      const list = payload?.animes || [];
+      return toExplorePageResponse(list, 1);
+    }
+
+    if (normalized === 'most-popular') {
+      const payload = await fetchApi('/anime/popular', c, { page: pageNum, limit: 20 });
+      return {
+        pageInfo: {
+          currentPage: toNumber(payload?.meta?.page, pageNum),
+          totalPages: Math.max(1, toNumber(payload?.meta?.totalPages, 1)),
+          hasNextPage:
+            toNumber(payload?.meta?.page, pageNum) < toNumber(payload?.meta?.totalPages, 1),
+        },
+        response: (payload?.animes || []).map((anime) => toExploreAnime(anime)),
+      };
+    }
+
+    if (normalized === 'recently-added') {
+      const payload = await fetchApi('/latest/anime', c, { page: pageNum, limit: 20 });
+      const totalPages = Math.max(1, toNumber(payload?.totalPages, 1));
+      const currentPage = Math.max(1, toNumber(payload?.page, pageNum));
+      return {
+        pageInfo: {
+          currentPage,
+          totalPages,
+          hasNextPage: currentPage < totalPages,
+        },
+        response: (payload?.animes || []).map((anime) => toExploreAnime(anime)),
+      };
+    }
+
+    if (normalized === 'recently-updated') {
+      const payload = await fetchApi('/latest/episode', c, { page: pageNum, limit: 100 });
+      const seen = new Set();
+      const mapped = [];
+      for (const episode of payload?.episodes || []) {
+        const anime = unwrapAnimeEntry(episode?.anime_info);
+        const animeId = getAnimeSlug(anime || {});
+        if (!anime || seen.has(animeId)) {
+          continue;
+        }
+        seen.add(animeId);
+        mapped.push(toExploreAnime(anime));
+        if (mapped.length >= 20) {
+          break;
+        }
+      }
+      return {
+        pageInfo: {
+          currentPage: toNumber(payload?.currentPage, pageNum),
+          totalPages: Math.max(1, toNumber(payload?.totalPages, pageNum)),
+          hasNextPage:
+            toNumber(payload?.currentPage, pageNum) < toNumber(payload?.totalPages, pageNum),
+        },
+        response: mapped,
+      };
+    }
+
+    const catalog = await loadCatalog(c);
+    let list = catalog;
+
+    if (normalized === 'most-favorite') {
+      list = [...catalog].sort((a, b) => b.__favorites - a.__favorites);
+    } else if (normalized === 'completed') {
+      list = catalog.filter((entry) => normalizeText(entry.Status).includes('finished'));
+    } else if (normalized === 'top-upcoming') {
+      list = catalog.filter(
+        (entry) =>
+          normalizeText(entry.Status).includes('not yet') ||
+          normalizeText(entry.Status).includes('upcoming')
+      );
+    } else if (normalized === 'subbed-anime') {
+      list = catalog.filter((entry) => toNumber(entry.totalSubbed || entry.totalSub) > 0);
+    } else if (normalized === 'dubbed-anime') {
+      list = catalog.filter((entry) => toNumber(entry.totalDubbed || entry.totalDub) > 0);
+    }
+
+    return toExplorePageResponse(list, pageNum);
+  } catch {
+    return getHianimeWebExploreData(normalized, pageNum, c);
   }
-
-  const catalog = await loadCatalog(c);
-  let list = catalog;
-
-  if (normalized === 'most-favorite') {
-    list = [...catalog].sort((a, b) => b.__favorites - a.__favorites);
-  } else if (normalized === 'completed') {
-    list = catalog.filter((entry) => normalizeText(entry.Status).includes('finished'));
-  } else if (normalized === 'top-upcoming') {
-    list = catalog.filter(
-      (entry) =>
-        normalizeText(entry.Status).includes('not yet') ||
-        normalizeText(entry.Status).includes('upcoming')
-    );
-  } else if (normalized === 'subbed-anime') {
-    list = catalog.filter((entry) => toNumber(entry.totalSubbed || entry.totalSub) > 0);
-  } else if (normalized === 'dubbed-anime') {
-    list = catalog.filter((entry) => toNumber(entry.totalDubbed || entry.totalDub) > 0);
-  }
-
-  return toExplorePageResponse(list, pageNum);
 }
 
 export async function getGenreData(genre, page, c) {

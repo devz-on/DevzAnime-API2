@@ -1,7 +1,7 @@
 const runtimeEnv = typeof process !== 'undefined' && process?.env ? process.env : {};
 
 function normalizeBaseUrl(raw) {
-  const fallback = 'https://aniwatchtv.to';
+  const fallback = 'https://hianime.dk';
   const value = String(raw || '').trim();
   if (!value) {
     return fallback;
@@ -11,7 +11,7 @@ function normalizeBaseUrl(raw) {
     const parsed = new URL(value);
     const host = String(parsed.hostname || '').toLowerCase();
 
-    // Legacy HiAnime hosts now serve a shutdown page; force a working fallback.
+    // Legacy HiAnime hosts may redirect or become unavailable.
     if (
       host === 'hianime.to' ||
       host === 'hianimes.se' ||

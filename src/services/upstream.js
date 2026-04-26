@@ -42,11 +42,17 @@ export function getProviderConfig(c) {
       /\/+$/,
       ''
     ),
+    hianimesWebBaseUrl: toSafeString(env.HIANIMES_WEB_BASE_URL || 'https://hianime.dk').replace(
+      /\/+$/,
+      ''
+    ),
     hianimesAjaxBaseUrl: toSafeString(
       env.HIANIMES_AJAX_BASE_URL || 'https://nine.mewcdn.online'
     ).replace(/\/+$/, ''),
-    hianimesReferer: toSafeString(env.HIANIMES_REFERER || 'https://hianimes.se/'),
-    m3u8ProxyUrl: toSafeString(env.UPSTREAM_PROXY_M3U8_URL || ''),
+    hianimesReferer: toSafeString(env.HIANIMES_REFERER || 'https://hianime.dk/'),
+    m3u8ProxyUrl: toSafeString(
+      env.UPSTREAM_PROXY_M3U8_URL || 'https://prox-plum-two.vercel.app/m3u8-proxy'
+    ),
     daniProxyUrl: toSafeString(
       env.UPSTREAM_PROXY_DANI_URL || 'https://daniapi.bhoothihu.workers.dev/api/v1/proxy'
     ),
@@ -84,6 +90,9 @@ export function buildProxyUrl(proxyBaseUrl, targetUrl, referer) {
   url.searchParams.set('url', targetUrl);
   if (referer) {
     url.searchParams.set('referer', referer);
+    if (url.pathname.replace(/\/+$/, '').toLowerCase().endsWith('/m3u8-proxy')) {
+      url.searchParams.set('headers', JSON.stringify({ referer }));
+    }
   }
   return url.toString();
 }
@@ -129,6 +138,34 @@ function buildCandidateUrls(targetUrl, config, referer, options = {}) {
   return candidates.filter(Boolean);
 }
 
+function toOrigin(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildRequestHeaders(baseAccept, referer, options = {}) {
+  const headers = {
+    Accept: baseAccept,
+    Referer: referer,
+    Origin: toOrigin(referer),
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
+  };
+
+  if (options?.isAjax) {
+    headers['X-Requested-With'] = 'XMLHttpRequest';
+  }
+
+  if (options?.headers && typeof options.headers === 'object') {
+    Object.assign(headers, options.headers);
+  }
+
+  return headers;
+}
+
 async function fetchJsonWithResponse(targetUrl, c, overrideReferer, options = {}) {
   const config = getProviderConfig(c);
   const referer = overrideReferer || config.hianimesReferer;
@@ -138,19 +175,7 @@ async function fetchJsonWithResponse(targetUrl, c, overrideReferer, options = {}
   for (const candidate of candidates) {
     try {
       const response = await fetchWithTimeout(candidate, {
-        headers: {
-          Accept: 'application/json, text/plain, */*',
-          Referer: referer,
-          Origin: (() => {
-            try {
-              return new URL(referer).origin;
-            } catch {
-              return undefined;
-            }
-          })(),
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
-        },
+        headers: buildRequestHeaders('application/json, text/plain, */*', referer, options),
       });
 
       if (!response.ok) {
@@ -186,19 +211,7 @@ async function fetchTextWithResponse(targetUrl, c, overrideReferer, options = {}
   for (const candidate of candidates) {
     try {
       const response = await fetchWithTimeout(candidate, {
-        headers: {
-          Accept: 'text/html,application/json,text/plain,*/*',
-          Referer: referer,
-          Origin: (() => {
-            try {
-              return new URL(referer).origin;
-            } catch {
-              return undefined;
-            }
-          })(),
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
-        },
+        headers: buildRequestHeaders('text/html,application/json,text/plain,*/*', referer, options),
       });
 
       if (!response.ok) {

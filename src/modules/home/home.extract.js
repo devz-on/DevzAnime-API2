@@ -3,6 +3,30 @@ import { load } from 'cheerio';
 
 export default function homeExtract(html) {
   const $ = load(html);
+  const animeIdFromHref = (href) => {
+    const value = String(href || '').trim();
+    if (!value) {
+      return null;
+    }
+    const cleanValue = value.split('?').at(0).split('#').at(0);
+    const segments = cleanValue.split('/').filter(Boolean);
+    const watchIndex = segments.findIndex((segment) => segment.toLowerCase() === 'watch');
+    if (watchIndex > -1 && segments.length > watchIndex + 1) {
+      return segments[watchIndex + 1] || null;
+    }
+
+    const withoutEpisodeTail = segments.filter((segment) => !/^ep-\d+$/i.test(segment));
+    return withoutEpisodeTail.at(-1) || segments.at(-1) || null;
+  };
+  const titleFromAnchor = ($el) => {
+    const textValue = String($el.text() || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return String($el.attr('title') || '').trim() || textValue || null;
+  };
+  const altTitleFromAnchor = ($el, fallback) => {
+    return String($el.attr('data-jname') || $el.attr('data-jp') || '').trim() || fallback || null;
+  };
 
   const response = {
     spotlight: [],
@@ -40,8 +64,10 @@ export default function homeExtract(html) {
       synopsis: null,
     };
     obj.rank = i + 1;
-    obj.id = $(el).find('.desi-buttons a').first().attr('href').split('/').at(-1);
-    obj.poster = $(el).find('.deslide-cover .film-poster-img').attr('data-src');
+    obj.id = animeIdFromHref($(el).find('.desi-buttons a').first().attr('href'));
+    obj.poster =
+      $(el).find('.deslide-cover .film-poster-img').attr('data-src') ||
+      $(el).find('.deslide-cover .film-poster-img').attr('src');
 
     const titles = $(el).find('.desi-head-title');
     obj.title = titles.text();
@@ -85,8 +111,8 @@ export default function homeExtract(html) {
 
     const imageEl = $(el).find('.film-poster');
 
-    obj.poster = imageEl.find('img').attr('data-src');
-    obj.id = imageEl.attr('href').split('/').at(-1);
+    obj.poster = imageEl.find('img').attr('data-src') || imageEl.find('img').attr('src');
+    obj.id = animeIdFromHref(imageEl.attr('href'));
 
     response.trending.push(obj);
   });
@@ -100,13 +126,19 @@ export default function homeExtract(html) {
           ...episodeObj(),
           type: null,
         };
-        const titleEl = $(item).find('.film-detail .film-name a');
-        obj.title = titleEl.attr('title');
-        obj.alternativeTitle = titleEl.attr('data-jname');
-        obj.id = titleEl.attr('href').split('/').at(-1);
+        const titleEl = $(item).find('.film-detail .film-name a').first();
+        obj.title = titleFromAnchor(titleEl);
+        obj.alternativeTitle = altTitleFromAnchor(titleEl, obj.title);
+        obj.id =
+          animeIdFromHref(titleEl.attr('href')) ||
+          animeIdFromHref($(item).find('.film-poster a').first().attr('href'));
 
-        obj.poster = $(item).find('.film-poster .film-poster-img').attr('data-src');
-        obj.type = $(item).find('.fd-infor .fdi-item').text();
+        obj.poster =
+          $(item).find('.film-poster .film-poster-img').attr('data-src') ||
+          $(item).find('.film-poster .film-poster-img').attr('src');
+        obj.type = String($(item).find('.fd-infor .fdi-item').first().text() || '')
+          .replace(/\s+/g, ' ')
+          .trim();
 
         obj.episodes.sub = Number($(item).find('.fd-infor .tick-sub').text());
         obj.episodes.dub = Number($(item).find('.fd-infor .tick-dub').text());
@@ -123,8 +155,13 @@ export default function homeExtract(html) {
 
     const dataType = $(el).find('.anif-block-header').text().replace(/\s+/g, '');
     const normalizedDataType = dataType.charAt(0).toLowerCase() + dataType.slice(1);
-
-    response[normalizedDataType] = data;
+    if (normalizedDataType === 'completed') {
+      response.latestCompleted = data;
+    } else if (normalizedDataType === 'newAdded' || normalizedDataType === 'newOnHiAnime') {
+      response.newAdded = data;
+    } else {
+      response[normalizedDataType] = data;
+    }
   });
 
   $($home).each((i, el) => {
@@ -135,12 +172,22 @@ export default function homeExtract(html) {
           ...commonAnimeObj(),
           ...episodeObj(),
         };
-        const titleEl = $(item).find('.film-detail .film-name .dynamic-name');
-        obj.title = titleEl.attr('title');
-        obj.alternativeTitle = titleEl.attr('data-jname');
-        obj.id = titleEl.attr('href').split('/').at(-1);
+        const titleEl = $(item)
+          .find(
+            '.film-detail .film-name a.d-title, .film-detail .film-name a, .film-detail .film-name .dynamic-name'
+          )
+          .first();
+        obj.title = titleFromAnchor(titleEl);
+        obj.alternativeTitle = altTitleFromAnchor(titleEl, obj.title);
+        obj.id =
+          animeIdFromHref(titleEl.attr('href')) ||
+          animeIdFromHref(
+            $(item).find('.film-poster a, .film-poster .film-poster-ahref').first().attr('href')
+          );
 
-        obj.poster = $(item).find('.film-poster img').attr('data-src');
+        obj.poster =
+          $(item).find('.film-poster img').attr('data-src') ||
+          $(item).find('.film-poster img').attr('src');
 
         const episodesEl = $(item).find('.film-poster .tick');
         obj.episodes.sub = Number($(episodesEl).find('.tick-sub').text());
@@ -159,9 +206,13 @@ export default function homeExtract(html) {
     const dataType = $(el).find('.cat-heading').text().replace(/\s+/g, '');
     const normalizedDataType = dataType.charAt(0).toLowerCase() + dataType.slice(1);
 
-    normalizedDataType === 'newOnHiAnime'
-      ? (response.newAdded = data)
-      : (response[normalizedDataType] = data);
+    if (normalizedDataType === 'newOnHiAnime' || normalizedDataType === 'newAdded') {
+      response.newAdded = data;
+    } else if (normalizedDataType === 'recentlyUpdated') {
+      response.latestEpisode = data;
+    } else {
+      response[normalizedDataType] = data;
+    }
   });
 
   const extractTopTen = (id) => {
@@ -169,11 +220,19 @@ export default function homeExtract(html) {
       .find(`${id} ul li`)
       .map((i, el) => {
         const obj = {
-          title: $(el).find('.film-name a').text() || null,
+          title: String($(el).find('.film-name a').text() || '')
+            .replace(/\s+/g, ' ')
+            .trim(),
           rank: i + 1,
-          alternativeTitle: $(el).find('.film-name a').attr('data-jname') || null,
-          id: $(el).find('.film-name a').attr('href').split('/').pop() || null,
-          poster: $(el).find('.film-poster img').attr('data-src') || null,
+          alternativeTitle:
+            $(el).find('.film-name a').attr('data-jname') ||
+            $(el).find('.film-name a').attr('data-jp') ||
+            null,
+          id: animeIdFromHref($(el).find('.film-name a').attr('href')),
+          poster:
+            $(el).find('.film-poster img').attr('data-src') ||
+            $(el).find('.film-poster img').attr('src') ||
+            null,
           episodes: {
             sub: Number($(el).find('.tick-item.tick-sub').text()),
             dub: Number($(el).find('.tick-item.tick-dub').text()),
@@ -194,8 +253,12 @@ export default function homeExtract(html) {
   $($genres)
     .find('li')
     .each((i, el) => {
-      const genre = $(el).find('a').attr('title').toLocaleLowerCase();
-      response.genres.push(genre);
+      const genre = String($(el).find('a').attr('title') || '')
+        .trim()
+        .toLowerCase();
+      if (genre) {
+        response.genres.push(genre);
+      }
     });
   return response;
 }

@@ -20,6 +20,12 @@ import {
   getProviderConfig,
   probeUrl,
 } from './upstream.js';
+import {
+  getHianimeWebAnimeInfoData,
+  getHianimeWebEpisodesData,
+  getHianimeWebServersData,
+  getHianimeWebStreamData,
+} from './hianimeWeb.js';
 
 function buildServerItems(urls, type) {
   const list = Array.isArray(urls) ? urls : [];
@@ -35,12 +41,17 @@ function buildServerItems(urls, type) {
   });
 }
 
-async function pickStreamUrlWithFallback(url, c) {
+async function pickStreamUrlWithFallback(url, c, refererOverride = '') {
   const config = getProviderConfig(c);
+  const referer = refererOverride || config.hianimesReferer;
+  if (config.m3u8ProxyUrl && isLikelyDirectMediaUrl(url)) {
+    return buildProxyUrl(config.m3u8ProxyUrl, url, referer);
+  }
+
   const candidates = [
     url,
-    buildProxyUrl(config.m3u8ProxyUrl, url, config.hianimesReferer),
-    buildProxyUrl(config.daniProxyUrl, url, config.hianimesReferer),
+    buildProxyUrl(config.m3u8ProxyUrl, url, referer),
+    buildProxyUrl(config.daniProxyUrl, url, referer),
   ].filter(Boolean);
 
   for (const candidate of candidates) {
@@ -52,6 +63,29 @@ async function pickStreamUrlWithFallback(url, c) {
   }
 
   return candidates[0] || url;
+}
+
+async function attachProxyToDirectStreamLinks(streams, c) {
+  const list = Array.isArray(streams) ? streams : [];
+  const resolved = [];
+  for (const item of list) {
+    const file = toSafeString(item?.link?.file);
+    if (!isLikelyDirectMediaUrl(file)) {
+      resolved.push(item);
+      continue;
+    }
+
+    const selectedUrl = await pickStreamUrlWithFallback(file, c, toSafeString(item?.referer));
+    resolved.push({
+      ...item,
+      link: {
+        ...item.link,
+        file: selectedUrl,
+        type: mediaTypeForUrl(selectedUrl),
+      },
+    });
+  }
+  return resolved;
 }
 
 function toFiniteNumber(value, fallback = 0) {
@@ -123,13 +157,44 @@ function sortServerItemsByPreference(serverItems, normalizedType) {
     return [];
   }
 
-  const preferredOrder = ['vidcloud', 'vidstreaming', 'douvideo'];
+  const preferredOrder = [
+    'vidhost',
+    'vidwish',
+    'vidcloud',
+    'vidstreaming',
+    'rapidcloud',
+    'douvideo',
+    'megaplay',
+  ];
   const getRank = (name) => {
     const index = preferredOrder.indexOf(name);
     return index < 0 ? preferredOrder.length + 1 : index;
   };
 
   return [...entries].sort((a, b) => getRank(a.name) - getRank(b.name));
+}
+
+function getPreferredStreamServerRank(name) {
+  const normalized = toSafeString(name).toLowerCase();
+  const preferredOrder = [
+    'vidhost',
+    'vidwish',
+    'vidcloud',
+    'vidstreaming',
+    'rapidcloud',
+    'hd-2',
+    'hd-1',
+    'hd-3',
+    'megaplay',
+  ];
+  const directMatch = preferredOrder.indexOf(normalized);
+  if (directMatch > -1) {
+    return directMatch;
+  }
+  if (normalized.includes('vid')) {
+    return preferredOrder.length + 1;
+  }
+  return preferredOrder.length + 10;
 }
 
 function parseRapidCloudSourceRequestUrl(url) {
@@ -274,7 +339,9 @@ async function resolveEmbeddedStreamDataFromNineAjax(
       const serversUrl = `${base}/ajax/episode/servers?episodeId=${encodeURIComponent(
         embedded.sourceId
       )}&type=${encodeURIComponent(normalizedType)}`;
-      const serversPayload = await fetchJsonWithFallback(serversUrl, c, embedded.referer);
+      const serversPayload = await fetchJsonWithFallback(serversUrl, c, embedded.referer, {
+        isAjax: true,
+      });
       const serverItems = parseServerItemsFromHtml(serversPayload?.html);
       const preferredServers = sortServerItemsByPreference(serverItems, normalizedType);
       if (preferredServers.length < 1) {
@@ -285,7 +352,9 @@ async function resolveEmbeddedStreamDataFromNineAjax(
         const sourcesUrl = `${base}/ajax/episode/sources?id=${encodeURIComponent(
           preferredServer.id
         )}&type=${encodeURIComponent(normalizedType)}`;
-        const sourcesPayload = await fetchJsonWithFallback(sourcesUrl, c, embedded.referer);
+        const sourcesPayload = await fetchJsonWithFallback(sourcesUrl, c, embedded.referer, {
+          isAjax: true,
+        });
         const rapidRequest = parseRapidCloudSourceRequestUrl(toSafeString(sourcesPayload?.link));
         if (!rapidRequest) {
           continue;
@@ -294,7 +363,8 @@ async function resolveEmbeddedStreamDataFromNineAjax(
         const rapidPayload = await fetchJsonWithFallback(
           rapidRequest.getSourcesUrl,
           c,
-          rapidRequest.referer
+          rapidRequest.referer,
+          { isAjax: true }
         );
         const sourceFile = extractStreamFileFromSources(rapidPayload?.sources);
         if (!sourceFile) {
@@ -353,7 +423,9 @@ async function resolveEmbeddedStreamDataFromHtmlDataId(
     for (const origin of candidateOrigins) {
       const getSourcesUrl = `${origin}/stream/getSources?id=${encodeURIComponent(dataId)}`;
       try {
-        const payload = await fetchJsonWithFallback(getSourcesUrl, c, selectedUrl);
+        const payload = await fetchJsonWithFallback(getSourcesUrl, c, selectedUrl, {
+          isAjax: true,
+        });
         const sourceFile = extractStreamFileFromSources(payload?.sources);
         if (!sourceFile) {
           continue;
@@ -399,7 +471,9 @@ async function resolveEmbeddedStreamDataFromLegacyGetSources(
   const getSourcesUrl = `${embedded.origin}/stream/getSources?id=${encodeURIComponent(embedded.sourceId)}`;
 
   try {
-    const payload = await fetchJsonWithFallback(getSourcesUrl, c, embedded.referer);
+    const payload = await fetchJsonWithFallback(getSourcesUrl, c, embedded.referer, {
+      isAjax: true,
+    });
     const sourceFile = extractStreamFileFromSources(payload?.sources);
     if (!sourceFile) {
       return null;
@@ -458,44 +532,52 @@ async function resolveEmbeddedStreamData(selectedUrl, selectedName, normalizedTy
 }
 
 export async function getAnimeInfoData(id, c) {
-  const { anime, episodes } = await loadAnimeDetails(id, c);
-  const catalog = await loadCatalog(c);
-  const popular = [...catalog].sort((a, b) => a.__popularity - b.__popularity).slice(0, 12);
-  const recommended = [...catalog]
-    .filter((entry) => entry.__id !== anime.__id)
-    .sort((a, b) => b.__score - a.__score)
-    .slice(0, 12);
+  try {
+    const { anime, episodes } = await loadAnimeDetails(id, c);
+    const catalog = await loadCatalog(c);
+    const popular = [...catalog].sort((a, b) => a.__popularity - b.__popularity).slice(0, 12);
+    const recommended = [...catalog]
+      .filter((entry) => entry.__id !== anime.__id)
+      .sort((a, b) => b.__score - a.__score)
+      .slice(0, 12);
 
-  const aired = parseAired(anime?.Aired);
-  return {
-    ...toBasicAnime(anime),
-    rating: toSafeString(anime?.Rating || ''),
-    type: toSafeString(anime?.Type || 'TV'),
-    is18Plus: toSafeString(anime?.Rating).toLowerCase().startsWith('r'),
-    synopsis: toSafeString(anime?.synopsis || ''),
-    synonyms: toSafeString(anime?.alternateTitle || ''),
-    aired,
-    premiered: toSafeString(anime?.Premiered || ''),
-    duration: toSafeString(anime?.Duration || ''),
-    status: toSafeString(anime?.Status || ''),
-    MAL_score: toSafeString(anime?.Score || anime?.score || ''),
-    genres: Array.isArray(anime?.genres) ? anime.genres : [],
-    studios: toSafeString(anime?.Licensors)
-      .split(',')
-      .map((value) => toSafeString(value))
-      .filter(Boolean),
-    producers: toSafeString(anime?.Producers)
-      .split(',')
-      .map((value) => slugify(value))
-      .filter(Boolean),
-    related: [],
-    mostPopular: popular.map((entry) => toBasicAnime(entry)),
-    recommended: recommended.map((entry) => ({
-      ...toExploreAnime(entry),
-      is18Plus: toSafeString(entry?.Rating).toLowerCase().startsWith('r'),
-    })),
-    _episodesRaw: episodes,
-  };
+    const aired = parseAired(anime?.Aired);
+    return {
+      ...toBasicAnime(anime),
+      rating: toSafeString(anime?.Rating || ''),
+      type: toSafeString(anime?.Type || 'TV'),
+      is18Plus: toSafeString(anime?.Rating).toLowerCase().startsWith('r'),
+      synopsis: toSafeString(anime?.synopsis || ''),
+      synonyms: toSafeString(anime?.alternateTitle || ''),
+      aired,
+      premiered: toSafeString(anime?.Premiered || ''),
+      duration: toSafeString(anime?.Duration || ''),
+      status: toSafeString(anime?.Status || ''),
+      MAL_score: toSafeString(anime?.Score || anime?.score || ''),
+      genres: Array.isArray(anime?.genres) ? anime.genres : [],
+      studios: toSafeString(anime?.Licensors)
+        .split(',')
+        .map((value) => toSafeString(value))
+        .filter(Boolean),
+      producers: toSafeString(anime?.Producers)
+        .split(',')
+        .map((value) => slugify(value))
+        .filter(Boolean),
+      related: [],
+      mostPopular: popular.map((entry) => toBasicAnime(entry)),
+      recommended: recommended.map((entry) => ({
+        ...toExploreAnime(entry),
+        is18Plus: toSafeString(entry?.Rating).toLowerCase().startsWith('r'),
+      })),
+      _episodesRaw: episodes,
+    };
+  } catch (error) {
+    try {
+      return await getHianimeWebAnimeInfoData(id, c);
+    } catch {
+      throw error;
+    }
+  }
 }
 
 export async function getRandomAnimeInfoData(c) {
@@ -508,103 +590,162 @@ export async function getRandomAnimeInfoData(c) {
 }
 
 export async function getEpisodesData(id, c) {
-  const { anime, episodes } = await loadAnimeDetails(id, c);
-  return episodes.map((episode, index) => ({
-    title: toSafeString(episode?.title || `Episode ${episode?.episodeNumber || index + 1}`),
-    alternativeTitle: toSafeString(
-      episode?.title || `Episode ${episode?.episodeNumber || index + 1}`
-    ),
-    id: toLegacyEpisodeId(anime.__id, episode),
-    isFiller: false,
-    episodeNumber: toNumber(episode?.episodeNumber, index + 1),
-  }));
+  try {
+    const { anime, episodes } = await loadAnimeDetails(id, c);
+    return episodes.map((episode, index) => ({
+      title: toSafeString(episode?.title || `Episode ${episode?.episodeNumber || index + 1}`),
+      alternativeTitle: toSafeString(
+        episode?.title || `Episode ${episode?.episodeNumber || index + 1}`
+      ),
+      id: toLegacyEpisodeId(anime.__id, episode),
+      isFiller: false,
+      episodeNumber: toNumber(episode?.episodeNumber, index + 1),
+    }));
+  } catch (error) {
+    try {
+      return await getHianimeWebEpisodesData(id, c);
+    } catch {
+      throw error;
+    }
+  }
 }
 
 export async function getServersData(episodeId, c) {
-  const { episode } = await resolveEpisode(episodeId, c);
-  const sub = buildServerItems(episode?.link?.sub, 'sub');
-  const dub = buildServerItems(episode?.link?.dub, 'dub');
-  return {
-    episode: toNumber(episode?.episodeNumber, 0),
-    sub: sub.map((server) => ({
-      index: server.index,
-      type: server.type,
-      id: server.id,
-      name: server.name,
-    })),
-    dub: dub.map((server) => ({
-      index: server.index,
-      type: server.type,
-      id: server.id,
-      name: server.name,
-    })),
-    _subRaw: sub,
-    _dubRaw: dub,
-  };
+  try {
+    const { episode } = await resolveEpisode(episodeId, c);
+    const sub = buildServerItems(episode?.link?.sub, 'sub');
+    const dub = buildServerItems(episode?.link?.dub, 'dub');
+    return {
+      episode: toNumber(episode?.episodeNumber, 0),
+      sub: sub.map((server) => ({
+        index: server.index,
+        type: server.type,
+        id: server.id,
+        name: server.name,
+      })),
+      dub: dub.map((server) => ({
+        index: server.index,
+        type: server.type,
+        id: server.id,
+        name: server.name,
+      })),
+      _subRaw: sub,
+      _dubRaw: dub,
+    };
+  } catch (error) {
+    try {
+      return await getHianimeWebServersData(episodeId, c);
+    } catch {
+      throw error;
+    }
+  }
 }
 
 export async function getStreamData(id, serverName, type, c) {
-  const servers = await getServersData(id, c);
   const normalizedServerName = toSafeString(serverName || 'hd-1').toLowerCase();
   const normalizedType = toSafeString(type || 'sub').toLowerCase() === 'dub' ? 'dub' : 'sub';
 
-  const sourceList = normalizedType === 'dub' ? servers._dubRaw : servers._subRaw;
-  const selected = sourceList.find((entry) => entry.name === normalizedServerName) || sourceList[0];
-  if (!selected) {
-    throw new NotFoundError('stream source not found');
-  }
+  try {
+    const servers = await getServersData(id, c);
 
-  const selectedUrlRaw = toSafeString(selected._url);
-  if (!selectedUrlRaw) {
-    throw new validationError('invalid stream source url');
-  }
+    const sourceList = normalizedType === 'dub' ? servers._dubRaw : servers._subRaw;
+    const selected =
+      sourceList.find((entry) => entry.name === normalizedServerName) ||
+      [...sourceList].sort(
+        (a, b) => getPreferredStreamServerRank(a?.name) - getPreferredStreamServerRank(b?.name)
+      )[0];
+    if (!selected) {
+      throw new NotFoundError('stream source not found');
+    }
 
-  if (isLikelyDirectMediaUrl(selectedUrlRaw)) {
-    const selectedUrl = await pickStreamUrlWithFallback(selectedUrlRaw, c);
+    const selectedUrlRaw = toSafeString(selected._url);
+    if (!selectedUrlRaw) {
+      throw new validationError('invalid stream source url');
+    }
+
+    if (isLikelyDirectMediaUrl(selectedUrlRaw)) {
+      const selectedUrl = await pickStreamUrlWithFallback(
+        selectedUrlRaw,
+        c,
+        getProviderConfig(c).hianimesReferer
+      );
+      return [
+        {
+          id,
+          type: normalizedType,
+          link: {
+            file: selectedUrl,
+            type: mediaTypeForUrl(selectedUrl),
+          },
+          tracks: [],
+          intro: { start: 0, end: 0 },
+          outro: { start: 0, end: 0 },
+          server: selected.name,
+          referer: getProviderConfig(c).hianimesReferer,
+        },
+      ];
+    }
+
+    const resolvedStream = await resolveEmbeddedStreamData(
+      selectedUrlRaw,
+      selected.name,
+      normalizedType,
+      id,
+      c
+    );
+    if (resolvedStream) {
+      return attachProxyToDirectStreamLinks(resolvedStream, c);
+    }
+
     return [
       {
         id,
         type: normalizedType,
         link: {
-          file: selectedUrl,
-          type: mediaTypeForUrl(selectedUrl),
+          file: selectedUrlRaw,
+          type: 'text/html',
         },
         tracks: [],
         intro: { start: 0, end: 0 },
         outro: { start: 0, end: 0 },
         server: selected.name,
         referer: getProviderConfig(c).hianimesReferer,
+        isDirect: false,
       },
     ];
-  }
+  } catch (error) {
+    try {
+      const requestedServer = toSafeString(serverName).toLowerCase();
+      const fallbackServerHint =
+        !requestedServer || /^hd-\d+$/i.test(requestedServer) ? 'vidhost' : requestedServer;
+      const fallbackStream = await getHianimeWebStreamData(id, fallbackServerHint, type, c);
+      if (!Array.isArray(fallbackStream) || fallbackStream.length < 1) {
+        return fallbackStream;
+      }
 
-  const resolvedStream = await resolveEmbeddedStreamData(
-    selectedUrlRaw,
-    selected.name,
-    normalizedType,
-    id,
-    c
-  );
-  if (resolvedStream) {
-    return resolvedStream;
-  }
+      for (const streamEntry of fallbackStream) {
+        const streamUrl = toSafeString(streamEntry?.link?.file);
+        if (!streamUrl || isLikelyDirectMediaUrl(streamUrl)) {
+          continue;
+        }
 
-  return [
-    {
-      id,
-      type: normalizedType,
-      link: {
-        file: selectedUrlRaw,
-        type: 'text/html',
-      },
-      tracks: [],
-      intro: { start: 0, end: 0 },
-      outro: { start: 0, end: 0 },
-      server: selected.name,
-      referer: getProviderConfig(c).hianimesReferer,
-      isDirect: false,
-    },
-  ];
+        const resolvedFallback = await resolveEmbeddedStreamData(
+          streamUrl,
+          toSafeString(streamEntry?.server || normalizedServerName || 'auto'),
+          normalizedType,
+          id,
+          c
+        );
+        if (resolvedFallback) {
+          return attachProxyToDirectStreamLinks(resolvedFallback, c);
+        }
+      }
+
+      return attachProxyToDirectStreamLinks(fallbackStream, c);
+    } catch {
+      throw error;
+    }
+  }
 }
 
 export async function getCharactersData(id, page, c) {

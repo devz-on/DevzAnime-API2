@@ -2,7 +2,9 @@ import { createRouter } from '../lib/create-app.js';
 
 import * as home from '../modules/home/index.js';
 import * as spotlight from '../modules/spotlight/index.js';
+import * as spotlightLegacy from '../modules/spotlightLegacy/index.js';
 import * as topTen from '../modules/topTen/index.js';
+import * as topTenLegacy from '../modules/topTenLegacy/index.js';
 import * as animeInfo from '../modules/info/animeInfo/index.js';
 import * as randomAnimeInfo from '../modules/info/randomAnimeInfo/index.js';
 import * as explore from '../modules/explore/index.js';
@@ -33,7 +35,9 @@ const router = createRouter();
 const routes = [
   home,
   spotlight,
+  spotlightLegacy,
   topTen,
+  topTenLegacy,
   randomAnimeInfo,
   animeInfo,
   search,
