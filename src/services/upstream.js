@@ -11,6 +11,36 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
+function normalizeProxyEndpoint(value, fallback = '') {
+  const input = toSafeString(value);
+  if (!input) {
+    return toSafeString(fallback);
+  }
+
+  let candidate = input;
+  candidate = candidate.replace(/^(https?:\/\/[^/?#:\s]+:\d+)(m3u8-proxy(?:\/|$))/i, '$1/$2');
+  candidate = candidate.replace(
+    /^((?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?)(m3u8-proxy(?:\/|$))/i,
+    '$1/$2'
+  );
+  if (
+    !/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate) &&
+    /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(candidate)
+  ) {
+    candidate = `http://${candidate}`;
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    if (!/^https?:$/i.test(parsed.protocol)) {
+      return toSafeString(fallback);
+    }
+    return parsed.toString();
+  } catch {
+    return toSafeString(fallback);
+  }
+}
+
 export function getRuntimeEnv(c) {
   const processEnv = typeof process !== 'undefined' && process?.env ? process.env : {};
   const contextEnv = c?.env && typeof c.env === 'object' ? c.env : {};
@@ -50,11 +80,13 @@ export function getProviderConfig(c) {
       env.HIANIMES_AJAX_BASE_URL || 'https://nine.mewcdn.online'
     ).replace(/\/+$/, ''),
     hianimesReferer: toSafeString(env.HIANIMES_REFERER || 'https://hianime.dk/'),
-    m3u8ProxyUrl: toSafeString(
-      env.UPSTREAM_PROXY_M3U8_URL || 'https://prox-plum-two.vercel.app/m3u8-proxy'
+    m3u8ProxyUrl: normalizeProxyEndpoint(
+      env.UPSTREAM_PROXY_M3U8_URL,
+      'http://localhost:8080/m3u8-proxy'
     ),
-    daniProxyUrl: toSafeString(
-      env.UPSTREAM_PROXY_DANI_URL || 'https://daniapi.bhoothihu.workers.dev/api/v1/proxy'
+    daniProxyUrl: normalizeProxyEndpoint(
+      env.UPSTREAM_PROXY_DANI_URL,
+      'https://daniapi.bhoothihu.workers.dev/api/v1/proxy'
     ),
     jikanApiBaseUrl: toSafeString(env.JIKAN_API_BASE_URL || 'https://api.jikan.moe/v4').replace(
       /\/+$/,
@@ -86,7 +118,11 @@ export function buildProxyUrl(proxyBaseUrl, targetUrl, referer) {
   if (!proxyBaseUrl) {
     return '';
   }
-  const url = new URL(proxyBaseUrl);
+  const normalizedBase = normalizeProxyEndpoint(proxyBaseUrl, '');
+  if (!normalizedBase) {
+    return '';
+  }
+  const url = new URL(normalizedBase);
   url.searchParams.set('url', targetUrl);
   if (referer) {
     url.searchParams.set('referer', referer);

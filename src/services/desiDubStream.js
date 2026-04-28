@@ -79,26 +79,6 @@ function parseEpisodeNumber(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function buildWorkerProxyUrl(c, targetUrl, referer) {
-  const safeTarget = toSafeString(targetUrl);
-  if (!safeTarget) {
-    return '';
-  }
-
-  try {
-    const requestUrl = new URL(c.req.url);
-    const apiBasePath = requestUrl.pathname.startsWith('/v1/') ? '/v1' : '/api/v1';
-    const params = new URLSearchParams();
-    params.set('url', safeTarget);
-    if (toSafeString(referer)) {
-      params.set('referer', toSafeString(referer));
-    }
-    return `${apiBasePath}/proxy?${params.toString()}`;
-  } catch {
-    return safeTarget;
-  }
-}
-
 function dedupeBy(values, keyBuilder) {
   const seen = new Set();
   const output = [];
@@ -895,10 +875,7 @@ export async function getHindiDubbedStreamData(id, episode, server, c) {
       id: episodeId,
       type: 'dub',
       link: {
-        file: (() => {
-          const safeReferer = toSafeString(stream.referer || `${config.desiDubSiteBaseUrl}/`);
-          return buildWorkerProxyUrl(c, stream.url, safeReferer);
-        })(),
+        file: toSafeString(stream.url),
         type: isLikelyDirectMediaUrl(stream.url) ? mediaTypeForUrl(stream.url) : 'text/html',
       },
       tracks: [],

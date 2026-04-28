@@ -97,15 +97,25 @@ function parseEmbeddedStreamUrl(url) {
   try {
     const parsed = new URL(url);
     const sourceMatch = parsed.pathname.match(/\/stream\/s-\d+\/([^/?#]+)(?:\/|$)/i);
-    if (!sourceMatch?.[1]) {
-      return null;
+    if (sourceMatch?.[1]) {
+      return {
+        origin: parsed.origin,
+        sourceId: sourceMatch[1],
+        referer: `${parsed.origin}/`,
+      };
     }
 
-    return {
-      origin: parsed.origin,
-      sourceId: sourceMatch[1],
-      referer: `${parsed.origin}/`,
-    };
+    if (
+      /\/stream\/(?:ani|mal|[a-z0-9_-]+)\/\d+(?:\/\d+)?(?:\/(?:sub|dub))?/i.test(parsed.pathname)
+    ) {
+      return {
+        origin: parsed.origin,
+        sourceId: '',
+        referer: parsed.toString(),
+      };
+    }
+
+    return null;
   } catch {
     return null;
   }
@@ -321,7 +331,7 @@ async function resolveEmbeddedStreamDataFromNineAjax(
   c
 ) {
   const embedded = parseEmbeddedStreamUrl(selectedUrl);
-  if (!embedded) {
+  if (!embedded || !embedded.sourceId) {
     return null;
   }
 
@@ -419,6 +429,33 @@ async function resolveEmbeddedStreamDataFromHtmlDataId(
       return null;
     }
 
+    const directGetSourcesUrl = `${embedded.origin}/stream/getSources?id=${encodeURIComponent(dataId)}`;
+    try {
+      const directPayload = await fetchJsonWithFallback(directGetSourcesUrl, c, selectedUrl, {
+        isAjax: true,
+      });
+      const directSourceFile = extractStreamFileFromSources(directPayload?.sources);
+      if (directSourceFile) {
+        return [
+          {
+            id,
+            type: normalizedType,
+            link: {
+              file: directSourceFile,
+              type: mediaTypeForUrl(directSourceFile),
+            },
+            tracks: normalizeTracks(directPayload?.tracks),
+            intro: normalizeStreamWindow(directPayload?.intro),
+            outro: normalizeStreamWindow(directPayload?.outro),
+            server: selectedName,
+            referer: `${embedded.origin}/`,
+          },
+        ];
+      }
+    } catch {
+      // Fall through to multi-origin scan.
+    }
+
     const candidateOrigins = extractCandidateOriginsFromHtml(html, embedded.origin);
     for (const origin of candidateOrigins) {
       const getSourcesUrl = `${origin}/stream/getSources?id=${encodeURIComponent(dataId)}`;
@@ -464,7 +501,7 @@ async function resolveEmbeddedStreamDataFromLegacyGetSources(
   c
 ) {
   const embedded = parseEmbeddedStreamUrl(selectedUrl);
-  if (!embedded) {
+  if (!embedded || !embedded.sourceId) {
     return null;
   }
 
@@ -528,6 +565,167 @@ async function resolveEmbeddedStreamData(selectedUrl, selectedName, normalizedTy
     normalizedType,
     id,
     c
+  );
+}
+
+function parseDirectMediaUrlsFromText(html, baseUrl) {
+  const body = toSafeString(html).replace(/\\\//g, '/');
+  if (!body) {
+    return [];
+  }
+
+  const matches = [
+    ...body.matchAll(
+      /https?:\/\/[^'"\\\s<>]+(?:\.m3u8|\.mp4|\.mkv|\.webm|\.mpd|\.ts)[^'"\\\s<>]*/gi
+    ),
+  ].map((match) => toSafeString(match[0]));
+
+  const unique = new Set();
+  const output = [];
+  matches.forEach((item) => {
+    try {
+      const normalized = new URL(item, baseUrl).toString();
+      if (unique.has(normalized)) {
+        return;
+      }
+      unique.add(normalized);
+      output.push(normalized);
+    } catch {
+      // Ignore malformed candidates.
+    }
+  });
+
+  return output;
+}
+
+function directMediaScore(url) {
+  const lower = toSafeString(url).toLowerCase();
+  let score = 0;
+  if (lower.includes('.m3u8')) score += 120;
+  if (lower.includes('.mp4')) score += 90;
+  if (lower.includes('.mpd')) score += 70;
+  if (lower.includes('asn=')) score -= 180;
+  if (lower.includes('#')) score -= 25;
+  return score;
+}
+
+function pickBestDirectMediaUrl(candidates) {
+  const list = (Array.isArray(candidates) ? candidates : [])
+    .map((value) => toSafeString(value))
+    .filter(Boolean);
+  if (list.length < 1) {
+    return '';
+  }
+
+  return [...list].sort((left, right) => directMediaScore(right) - directMediaScore(left))[0];
+}
+
+async function resolveDirectMediaFromEmbedHtml(embedUrl, referer, c) {
+  const html = await fetchTextWithFallback(embedUrl, c, referer, { useProxy: false });
+  const candidates = parseDirectMediaUrlsFromText(html, embedUrl);
+  return pickBestDirectMediaUrl(candidates);
+}
+
+function createDirectStreamEntry({
+  id,
+  type,
+  streamUrl,
+  serverName,
+  referer,
+  tracks = [],
+  intro,
+  outro,
+}) {
+  return {
+    id,
+    type,
+    link: {
+      file: streamUrl,
+      type: mediaTypeForUrl(streamUrl),
+    },
+    tracks: Array.isArray(tracks) ? tracks : [],
+    intro: normalizeStreamWindow(intro),
+    outro: normalizeStreamWindow(outro),
+    server: toSafeString(serverName) || 'auto',
+    referer: toSafeString(referer),
+    isDirect: true,
+  };
+}
+
+async function resolvePlayableDirectStreamFromEntries({
+  entries,
+  id,
+  type,
+  fallbackServerName,
+  fallbackReferer,
+  c,
+}) {
+  const rows = Array.isArray(entries) ? entries : [];
+  const directCandidates = [];
+
+  for (const streamEntry of rows) {
+    const streamUrl = toSafeString(streamEntry?.link?.file || streamEntry?._url);
+    if (!streamUrl) {
+      continue;
+    }
+
+    const serverName = toSafeString(streamEntry?.server || streamEntry?.name || fallbackServerName);
+    const entryReferer = toSafeString(
+      streamEntry?.referer || streamEntry?._watchUrl || fallbackReferer
+    );
+
+    if (isLikelyDirectMediaUrl(streamUrl)) {
+      directCandidates.push(
+        createDirectStreamEntry({
+          id,
+          type,
+          streamUrl,
+          serverName,
+          referer: entryReferer,
+          tracks: streamEntry?.tracks,
+          intro: streamEntry?.intro,
+          outro: streamEntry?.outro,
+        })
+      );
+      continue;
+    }
+
+    const resolvedFallback = await resolveEmbeddedStreamData(
+      streamUrl,
+      serverName || fallbackServerName || 'auto',
+      type,
+      id,
+      c
+    );
+    if (resolvedFallback) {
+      directCandidates.push(...resolvedFallback);
+    }
+
+    const extractedDirectUrl = await resolveDirectMediaFromEmbedHtml(
+      streamUrl,
+      entryReferer || fallbackReferer,
+      c
+    ).catch(() => '');
+    if (extractedDirectUrl) {
+      directCandidates.push(
+        createDirectStreamEntry({
+          id,
+          type,
+          streamUrl: extractedDirectUrl,
+          serverName,
+          referer: streamUrl,
+        })
+      );
+    }
+  }
+
+  if (directCandidates.length < 1) {
+    return null;
+  }
+
+  const proxied = await attachProxyToDirectStreamLinks(directCandidates, c);
+  return (Array.isArray(proxied) ? proxied : []).find((entry) =>
+    isLikelyDirectMediaUrl(toSafeString(entry?.link?.file))
   );
 }
 
@@ -642,106 +840,94 @@ export async function getServersData(episodeId, c) {
 }
 
 export async function getStreamData(id, serverName, type, c) {
-  const normalizedServerName = toSafeString(serverName || 'hd-1').toLowerCase();
+  const requestedServerName = toSafeString(serverName).toLowerCase();
+  const normalizedServerName = requestedServerName || 'hd-1';
   const normalizedType = toSafeString(type || 'sub').toLowerCase() === 'dub' ? 'dub' : 'sub';
+  const fallbackReferer = getProviderConfig(c).hianimesReferer;
 
   try {
     const servers = await getServersData(id, c);
 
     const sourceList = normalizedType === 'dub' ? servers._dubRaw : servers._subRaw;
-    const selected =
-      sourceList.find((entry) => entry.name === normalizedServerName) ||
-      [...sourceList].sort(
-        (a, b) => getPreferredStreamServerRank(a?.name) - getPreferredStreamServerRank(b?.name)
-      )[0];
+    const selected = requestedServerName
+      ? sourceList.find((entry) => entry.name === normalizedServerName)
+      : [...sourceList].sort(
+          (a, b) => getPreferredStreamServerRank(a?.name) - getPreferredStreamServerRank(b?.name)
+        )[0];
+
+    if (requestedServerName && !selected) {
+      throw new NotFoundError('requested server is not available for this episode');
+    }
+
     if (!selected) {
       throw new NotFoundError('stream source not found');
     }
 
     const selectedUrlRaw = toSafeString(selected._url);
-    if (!selectedUrlRaw) {
-      throw new validationError('invalid stream source url');
-    }
-
-    if (isLikelyDirectMediaUrl(selectedUrlRaw)) {
-      const selectedUrl = await pickStreamUrlWithFallback(
-        selectedUrlRaw,
-        c,
-        getProviderConfig(c).hianimesReferer
-      );
-      return [
-        {
-          id,
-          type: normalizedType,
-          link: {
-            file: selectedUrl,
-            type: mediaTypeForUrl(selectedUrl),
+    if (selectedUrlRaw) {
+      const playable = await resolvePlayableDirectStreamFromEntries({
+        entries: [
+          {
+            link: {
+              file: selectedUrlRaw,
+            },
+            server: selected.name,
+            referer: fallbackReferer,
           },
-          tracks: [],
-          intro: { start: 0, end: 0 },
-          outro: { start: 0, end: 0 },
-          server: selected.name,
-          referer: getProviderConfig(c).hianimesReferer,
-        },
-      ];
-    }
-
-    const resolvedStream = await resolveEmbeddedStreamData(
-      selectedUrlRaw,
-      selected.name,
-      normalizedType,
-      id,
-      c
-    );
-    if (resolvedStream) {
-      return attachProxyToDirectStreamLinks(resolvedStream, c);
-    }
-
-    return [
-      {
+        ],
         id,
         type: normalizedType,
-        link: {
-          file: selectedUrlRaw,
-          type: 'text/html',
-        },
-        tracks: [],
-        intro: { start: 0, end: 0 },
-        outro: { start: 0, end: 0 },
-        server: selected.name,
-        referer: getProviderConfig(c).hianimesReferer,
-        isDirect: false,
-      },
-    ];
+        fallbackServerName: selected.name,
+        fallbackReferer,
+        c,
+      });
+
+      if (playable) {
+        return [playable];
+      }
+    }
+
+    if (selected?._linkId) {
+      const webStream = await getHianimeWebStreamData(id, selected.name, normalizedType, c);
+      const playableFromWeb = await resolvePlayableDirectStreamFromEntries({
+        entries: webStream,
+        id,
+        type: normalizedType,
+        fallbackServerName: selected.name,
+        fallbackReferer: toSafeString(selected?._watchUrl) || fallbackReferer,
+        c,
+      });
+      if (playableFromWeb) {
+        return [playableFromWeb];
+      }
+    }
+
+    throw new NotFoundError('direct stream source not found');
   } catch (error) {
+    if (requestedServerName) {
+      throw error;
+    }
+
     try {
-      const requestedServer = toSafeString(serverName).toLowerCase();
-      const fallbackServerHint =
-        !requestedServer || /^hd-\d+$/i.test(requestedServer) ? 'vidhost' : requestedServer;
+      const fallbackServerHint = 'vidhost';
       const fallbackStream = await getHianimeWebStreamData(id, fallbackServerHint, type, c);
       if (!Array.isArray(fallbackStream) || fallbackStream.length < 1) {
-        return fallbackStream;
+        throw error;
       }
 
-      for (const streamEntry of fallbackStream) {
-        const streamUrl = toSafeString(streamEntry?.link?.file);
-        if (!streamUrl || isLikelyDirectMediaUrl(streamUrl)) {
-          continue;
-        }
-
-        const resolvedFallback = await resolveEmbeddedStreamData(
-          streamUrl,
-          toSafeString(streamEntry?.server || normalizedServerName || 'auto'),
-          normalizedType,
-          id,
-          c
-        );
-        if (resolvedFallback) {
-          return attachProxyToDirectStreamLinks(resolvedFallback, c);
-        }
+      const playable = await resolvePlayableDirectStreamFromEntries({
+        entries: fallbackStream,
+        id,
+        type: normalizedType,
+        fallbackServerName: normalizedServerName || fallbackServerHint,
+        fallbackReferer,
+        c,
+      });
+      if (playable) {
+        return [playable];
       }
 
-      return attachProxyToDirectStreamLinks(fallbackStream, c);
+      throw error;
     } catch {
       throw error;
     }
