@@ -126,7 +126,7 @@ export function buildProxyUrl(proxyBaseUrl, targetUrl, referer) {
   url.searchParams.set('url', targetUrl);
   if (referer) {
     url.searchParams.set('referer', referer);
-    if (url.pathname.replace(/\/+$/, '').toLowerCase().endsWith('/m3u8-proxy')) {
+    if (url.pathname.replace(/\/+$/, '').toLowerCase().endsWith('m3u8-proxy')) {
       url.searchParams.set('headers', JSON.stringify({ referer }));
     }
   }
