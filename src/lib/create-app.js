@@ -7,6 +7,7 @@ import { AppError } from '../utils/errors.js';
 import zodValidationHook from '../middlewares/hook.js';
 import { htmlAsString } from '../utils/htmlAsString.js';
 import { collectError } from '../workers/errorCollector.worker.js';
+import { getMaintenanceSnapshot } from '../services/maintenanceMode.js';
 
 function getEnvNumber(value, fallback) {
   const parsed = Number(value);
@@ -133,6 +134,14 @@ function resolveCorsOrigin(origin, corsConfig) {
   return '';
 }
 
+function isMaintenaceProtectedApiPath(pathname) {
+  return pathname.startsWith('/api/v1') || pathname.startsWith('/v1');
+}
+
+function isMaintenanceBypassPath(pathname) {
+  return pathname === '/api/v1/errors' || pathname === '/v1/errors';
+}
+
 export function createRouter() {
   return new OpenAPIHono({
     defaultHook: zodValidationHook,
@@ -164,6 +173,28 @@ export default function createApp() {
     .use(corsConf)
     .options('*', corsConf)
     .use(rateLimiterConf)
+    .use(async (c, next) => {
+      const path = c.req.path;
+      if (
+        c.req.method === 'OPTIONS' ||
+        !isMaintenaceProtectedApiPath(path) ||
+        isMaintenanceBypassPath(path)
+      ) {
+        return next();
+      }
+
+      const maintenance = await getMaintenanceSnapshot(env);
+      if (!maintenance.enabled) {
+        return next();
+      }
+
+      return fail(c, 'service temporarily unavailable due to maintenance mode', 503, {
+        code: 'MAINTENANCE_MODE',
+        source: 'd-logger',
+        updatedBy: maintenance.updatedBy,
+        updatedAt: maintenance.updatedAt,
+      });
+    })
     .use('/api/v1/*', logger())
     .get('/', (c) => c.html(htmlAsString))
     .get('/api', (c) => c.html(htmlAsString))

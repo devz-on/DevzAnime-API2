@@ -7,7 +7,7 @@ import { isLikelyDirectMediaUrl, mediaTypeForUrl, toNumber, toSafeString } from 
 import { getProviderConfig } from './upstream.js';
 import { NotFoundError, validationError } from '../utils/errors.js';
 
-const FETCH_TIMEOUT_MS = 12_000;
+const FETCH_TIMEOUT_MS = 30_000;
 const SESSION_TTL_MS = 4 * 60 * 1000;
 const WATCH_CACHE_TTL_MS = 2 * 60 * 1000;
 const USER_AGENT =
@@ -155,21 +155,38 @@ async function fetchTextWithSession(target, c, options = {}) {
     : `${origin}${target.startsWith('/') ? target : `/${target}`}`;
   const referer = options.referer || `${origin}/home`;
   const isAjax = Boolean(options.isAjax);
-  const attemptFetch = async (forceRefresh) => {
-    const cookie = await initSession(c, forceRefresh);
+  const attemptFetch = async (cookie = '') => {
     return withTimeout(targetUrl, {
       headers: buildHeaders({
         origin,
         referer,
         isAjax,
-        cookie,
+        cookie: toSafeString(cookie),
       }),
     });
   };
 
-  let response = await attemptFetch(false);
-  if (!response.ok && options.retrySession !== false && shouldRefreshSession(response.status)) {
-    response = await attemptFetch(true);
+  let response = null;
+  let firstError = null;
+
+  try {
+    // Fast path: most endpoints work without prior /home bootstrap.
+    response = await attemptFetch('');
+  } catch (error) {
+    firstError = error;
+  }
+
+  const shouldRetryWithSession =
+    options.retrySession !== false && (!response || shouldRefreshSession(response.status));
+
+  if (shouldRetryWithSession) {
+    const shouldForceRefresh = Boolean(response);
+    const cookie = await initSession(c, shouldForceRefresh);
+    response = await attemptFetch(cookie);
+  }
+
+  if (!response) {
+    throw firstError || new validationError('hianime request failed before receiving response');
   }
 
   const text = await response.text();

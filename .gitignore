@@ -136,3 +136,4 @@ demo.js
 # Cloudflare Wrangler local secrets/state
 .dev.vars
 .wrangler/
+agents.md

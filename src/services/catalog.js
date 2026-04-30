@@ -195,6 +195,14 @@ export function parseLegacyEpisodeId(rawEpisodeId) {
   const decoded = decodeURIComponent(toSafeString(rawEpisodeId));
   const match = decoded.match(/^(.*)::ep=(.*)$/);
   if (!match) {
+    const legacyMatch = decoded.match(/^(.*)-episode-(\d+)$/i);
+    if (legacyMatch) {
+      return {
+        animeId: toSafeString(legacyMatch[1]),
+        episodeRef: toSafeString(legacyMatch[2]),
+      };
+    }
+
     return {
       animeId: decoded,
       episodeRef: '',

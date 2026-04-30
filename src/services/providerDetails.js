@@ -13,12 +13,10 @@ import {
   toSafeString,
 } from './normalizers.js';
 import {
-  buildProxyUrl,
   fetchJikan,
   fetchJsonWithFallback,
   fetchTextWithFallback,
   getProviderConfig,
-  probeUrl,
 } from './upstream.js';
 import {
   getHianimeWebAnimeInfoData,
@@ -39,53 +37,6 @@ function buildServerItems(urls, type) {
       _url: String(url),
     };
   });
-}
-
-async function pickStreamUrlWithFallback(url, c, refererOverride = '') {
-  const config = getProviderConfig(c);
-  const referer = refererOverride || config.hianimesReferer;
-  if (config.m3u8ProxyUrl && isLikelyDirectMediaUrl(url)) {
-    return buildProxyUrl(config.m3u8ProxyUrl, url, referer);
-  }
-
-  const candidates = [
-    url,
-    buildProxyUrl(config.m3u8ProxyUrl, url, referer),
-    buildProxyUrl(config.daniProxyUrl, url, referer),
-  ].filter(Boolean);
-
-  for (const candidate of candidates) {
-    // HEAD succeeds for many direct urls, and 405 usually still means URL is valid for GET.
-    const ok = await probeUrl(candidate);
-    if (ok) {
-      return candidate;
-    }
-  }
-
-  return candidates[0] || url;
-}
-
-async function attachProxyToDirectStreamLinks(streams, c) {
-  const list = Array.isArray(streams) ? streams : [];
-  const resolved = [];
-  for (const item of list) {
-    const file = toSafeString(item?.link?.file);
-    if (!isLikelyDirectMediaUrl(file)) {
-      resolved.push(item);
-      continue;
-    }
-
-    const selectedUrl = await pickStreamUrlWithFallback(file, c, toSafeString(item?.referer));
-    resolved.push({
-      ...item,
-      link: {
-        ...item.link,
-        file: selectedUrl,
-        type: mediaTypeForUrl(selectedUrl),
-      },
-    });
-  }
-  return resolved;
 }
 
 function toFiniteNumber(value, fallback = 0) {
@@ -118,6 +69,25 @@ function parseEmbeddedStreamUrl(url) {
     return null;
   } catch {
     return null;
+  }
+}
+
+function extractIframeSourceUrlFromHtml(html, baseUrl) {
+  const body = toSafeString(html);
+  if (!body) {
+    return '';
+  }
+
+  const iframeMatch = body.match(/<iframe[^>]+src\s*=\s*['"]([^'"]+)['"]/i);
+  const iframeSrc = toSafeString(iframeMatch?.[1]);
+  if (!iframeSrc) {
+    return '';
+  }
+
+  try {
+    return new URL(iframeSrc, baseUrl).toString();
+  } catch {
+    return '';
   }
 }
 
@@ -351,6 +321,7 @@ async function resolveEmbeddedStreamDataFromNineAjax(
       )}&type=${encodeURIComponent(normalizedType)}`;
       const serversPayload = await fetchJsonWithFallback(serversUrl, c, embedded.referer, {
         isAjax: true,
+        useProxy: false,
       });
       const serverItems = parseServerItemsFromHtml(serversPayload?.html);
       const preferredServers = sortServerItemsByPreference(serverItems, normalizedType);
@@ -364,6 +335,7 @@ async function resolveEmbeddedStreamDataFromNineAjax(
         )}&type=${encodeURIComponent(normalizedType)}`;
         const sourcesPayload = await fetchJsonWithFallback(sourcesUrl, c, embedded.referer, {
           isAjax: true,
+          useProxy: false,
         });
         const rapidRequest = parseRapidCloudSourceRequestUrl(toSafeString(sourcesPayload?.link));
         if (!rapidRequest) {
@@ -374,15 +346,10 @@ async function resolveEmbeddedStreamDataFromNineAjax(
           rapidRequest.getSourcesUrl,
           c,
           rapidRequest.referer,
-          { isAjax: true }
+          { isAjax: true, useProxy: false }
         );
         const sourceFile = extractStreamFileFromSources(rapidPayload?.sources);
         if (!sourceFile) {
-          continue;
-        }
-
-        const isDirectlyReachable = await probeUrl(sourceFile);
-        if (!isDirectlyReachable && preferredServers.length > 1) {
           continue;
         }
 
@@ -423,7 +390,7 @@ async function resolveEmbeddedStreamDataFromHtmlDataId(
   }
 
   try {
-    const html = await fetchTextWithFallback(selectedUrl, c, embedded.referer);
+    const html = await fetchTextWithFallback(selectedUrl, c, embedded.referer, { useProxy: false });
     const dataId = extractDataIdFromHtml(html);
     if (!dataId) {
       return null;
@@ -433,6 +400,7 @@ async function resolveEmbeddedStreamDataFromHtmlDataId(
     try {
       const directPayload = await fetchJsonWithFallback(directGetSourcesUrl, c, selectedUrl, {
         isAjax: true,
+        useProxy: false,
       });
       const directSourceFile = extractStreamFileFromSources(directPayload?.sources);
       if (directSourceFile) {
@@ -462,6 +430,7 @@ async function resolveEmbeddedStreamDataFromHtmlDataId(
       try {
         const payload = await fetchJsonWithFallback(getSourcesUrl, c, selectedUrl, {
           isAjax: true,
+          useProxy: false,
         });
         const sourceFile = extractStreamFileFromSources(payload?.sources);
         if (!sourceFile) {
@@ -510,6 +479,7 @@ async function resolveEmbeddedStreamDataFromLegacyGetSources(
   try {
     const payload = await fetchJsonWithFallback(getSourcesUrl, c, embedded.referer, {
       isAjax: true,
+      useProxy: false,
     });
     const sourceFile = extractStreamFileFromSources(payload?.sources);
     if (!sourceFile) {
@@ -626,6 +596,27 @@ async function resolveDirectMediaFromEmbedHtml(embedUrl, referer, c) {
   return pickBestDirectMediaUrl(candidates);
 }
 
+async function resolveEmbeddedStreamDataFromIframeHtml(
+  selectedUrl,
+  referer,
+  selectedName,
+  normalizedType,
+  id,
+  c
+) {
+  try {
+    const html = await fetchTextWithFallback(selectedUrl, c, referer, { useProxy: false });
+    const iframeStreamUrl = extractIframeSourceUrlFromHtml(html, selectedUrl);
+    if (!iframeStreamUrl || iframeStreamUrl === selectedUrl) {
+      return null;
+    }
+
+    return resolveEmbeddedStreamData(iframeStreamUrl, selectedName, normalizedType, id, c);
+  } catch {
+    return null;
+  }
+}
+
 function createDirectStreamEntry({
   id,
   type,
@@ -699,6 +690,20 @@ async function resolvePlayableDirectStreamFromEntries({
     );
     if (resolvedFallback) {
       directCandidates.push(...resolvedFallback);
+      continue;
+    }
+
+    const resolvedFromIframe = await resolveEmbeddedStreamDataFromIframeHtml(
+      streamUrl,
+      entryReferer || fallbackReferer,
+      serverName || fallbackServerName || 'auto',
+      type,
+      id,
+      c
+    );
+    if (resolvedFromIframe) {
+      directCandidates.push(...resolvedFromIframe);
+      continue;
     }
 
     const extractedDirectUrl = await resolveDirectMediaFromEmbedHtml(
@@ -723,10 +728,21 @@ async function resolvePlayableDirectStreamFromEntries({
     return null;
   }
 
-  const proxied = await attachProxyToDirectStreamLinks(directCandidates, c);
-  return (Array.isArray(proxied) ? proxied : []).find((entry) =>
-    isLikelyDirectMediaUrl(toSafeString(entry?.link?.file))
-  );
+  return directCandidates.find((entry) => isLikelyDirectMediaUrl(toSafeString(entry?.link?.file)));
+}
+
+async function getHianimeWebStreamDataWithRetry(id, serverName, type, c, maxAttempts = 2) {
+  let lastError = null;
+  const attempts = Math.max(1, toFiniteNumber(maxAttempts, 2));
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await getHianimeWebStreamData(id, serverName, type, c);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new NotFoundError('stream source not found');
 }
 
 export async function getAnimeInfoData(id, c) {
@@ -845,6 +861,26 @@ export async function getStreamData(id, serverName, type, c) {
   const normalizedType = toSafeString(type || 'sub').toLowerCase() === 'dub' ? 'dub' : 'sub';
   const fallbackReferer = getProviderConfig(c).hianimesReferer;
 
+  const webFirstStream = await getHianimeWebStreamDataWithRetry(
+    id,
+    normalizedServerName,
+    normalizedType,
+    c
+  ).catch(() => null);
+  if (Array.isArray(webFirstStream) && webFirstStream.length > 0) {
+    const webFirstPlayable = await resolvePlayableDirectStreamFromEntries({
+      entries: webFirstStream,
+      id,
+      type: normalizedType,
+      fallbackServerName: normalizedServerName,
+      fallbackReferer,
+      c,
+    });
+    if (webFirstPlayable) {
+      return [webFirstPlayable];
+    }
+  }
+
   try {
     const servers = await getServersData(id, c);
 
@@ -888,7 +924,12 @@ export async function getStreamData(id, serverName, type, c) {
     }
 
     if (selected?._linkId) {
-      const webStream = await getHianimeWebStreamData(id, selected.name, normalizedType, c);
+      const webStream = await getHianimeWebStreamDataWithRetry(
+        id,
+        selected.name,
+        normalizedType,
+        c
+      );
       const playableFromWeb = await resolvePlayableDirectStreamFromEntries({
         entries: webStream,
         id,
@@ -904,13 +945,14 @@ export async function getStreamData(id, serverName, type, c) {
 
     throw new NotFoundError('direct stream source not found');
   } catch (error) {
-    if (requestedServerName) {
-      throw error;
-    }
-
     try {
-      const fallbackServerHint = 'vidhost';
-      const fallbackStream = await getHianimeWebStreamData(id, fallbackServerHint, type, c);
+      const fallbackServerHint = normalizedServerName || 'vidhost';
+      const fallbackStream = await getHianimeWebStreamDataWithRetry(
+        id,
+        fallbackServerHint,
+        type,
+        c
+      );
       if (!Array.isArray(fallbackStream) || fallbackStream.length < 1) {
         throw error;
       }
